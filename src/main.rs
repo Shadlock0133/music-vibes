@@ -1,11 +1,9 @@
 use std::{
+    collections::VecDeque,
     fs::File,
     io::{self, BufReader},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -26,6 +24,7 @@ use buttplug::{
 };
 use clap::Parser;
 use earplugs::win::capture::AudioCapture;
+use parking_lot::Mutex;
 use rodio::{Decoder, OutputStream, Sink, Source};
 
 fn open_decoder(
@@ -102,7 +101,8 @@ struct Listen {
 }
 
 fn listen(args: Listen) {
-    let dur = Duration::from_millis(10);
+    let stereo = false;
+    let dur = Duration::from_millis(1);
     let mut capture = AudioCapture::init(dur).unwrap();
 
     let format = capture.format().unwrap();
@@ -113,8 +113,13 @@ fn listen(args: Listen) {
             / 1000.,
     ) / 2;
 
-    let value = Arc::new(AtomicU32::new(0));
-    let value2 = value.clone();
+    let buffer_size = (format.sample_rate as f32 * dur.as_secs_f32()) as usize
+        * format.channels as usize;
+    let mut deque = VecDeque::new();
+    deque.resize(buffer_size, 0.0);
+
+    let buffer = Arc::new(Mutex::new(deque));
+    let buffer2 = buffer.clone();
     let _t = std::thread::spawn(move || {
         block_on(async move {
             let client = start_bp_server().await.unwrap();
@@ -131,9 +136,18 @@ fn listen(args: Listen) {
 
             loop {
                 std::thread::sleep(dur);
-                let speed = value.load(Ordering::Relaxed);
-                let speed = f32::from_bits(speed);
-                let speeds = vec![speed as _; vib_count as _];
+                let mut buf = buffer.lock();
+                let buf = buf.make_contiguous();
+                let speeds = calculate_power(&buf, format.channels as _);
+                let speeds = if stereo && vib_count == format.channels as u32 {
+                    speeds
+                        .into_iter()
+                        .map(|x| (x * args.multiply).clamp(0.0, 1.0) as f64)
+                        .collect()
+                } else {
+                    let avg = (avg(&speeds) * args.multiply).clamp(0.0, 1.0);
+                    vec![avg as _; vib_count as _]
+                };
                 let res =
                     device.vibrate(VibrateCommand::SpeedVec(speeds)).await;
                 if let Err(e) = res {
@@ -150,16 +164,16 @@ fn listen(args: Listen) {
     capture.start().unwrap();
     loop {
         std::thread::sleep(actual_duration);
-        let res = capture.read_samples::<(), _>(|samples, _| {
-            let speeds = calculate_power(samples, format.channels as usize);
-            let speed = (avg(&speeds) * args.multiply).clamp(0.0, 1.0);
-            value2.store(speed.to_bits(), Ordering::Relaxed);
-            Ok(())
-        });
-        if let Err(e) = res {
-            eprintln!("{:?}", e);
-            break;
-        }
+        capture
+            .read_samples::<(), _>(|samples, _| {
+                let mut buf = buffer2.lock();
+                for value in samples {
+                    buf.push_front(*value);
+                }
+                buf.truncate(buffer_size);
+                Ok(())
+            })
+            .unwrap();
     }
 }
 

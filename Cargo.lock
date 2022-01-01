@@ -1352,6 +1352,7 @@ dependencies = [
  "clap 3.0.0",
  "earplugs",
  "flume",
+ "parking_lot",
  "rodio",
 ]
 
