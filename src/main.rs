@@ -2,11 +2,18 @@ use std::{
     fs::File,
     io::{self, BufReader},
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 use buttplug::{
-    client::{ButtplugClient, ButtplugClientError, VibrateCommand},
+    client::{
+        ButtplugClient, ButtplugClientDevice, ButtplugClientError,
+        VibrateCommand,
+    },
     connector::{
         ButtplugRemoteClientConnector as RemoteConn,
         ButtplugWebsocketClientTransport as WebsocketTransport,
@@ -18,6 +25,7 @@ use buttplug::{
     util::async_manager::block_on,
 };
 use clap::Parser;
+use earplugs::win::capture::AudioCapture;
 use rodio::{Decoder, OutputStream, Sink, Source};
 
 fn open_decoder(
@@ -27,17 +35,163 @@ fn open_decoder(
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
+async fn start_bp_server() -> Result<ButtplugClient, ButtplugClientError> {
+    let remote_connector = RemoteConn::<_, JsonSer>::new(
+        WebsocketTransport::new_insecure_connector("ws://127.0.0.1:12345"),
+    );
+    let client = ButtplugClient::new("music-vibes");
+    // Fallback to in-process server
+    if let Err(e) = client.connect(remote_connector).await {
+        eprintln!("Couldn't connect to external server: {}", e);
+        eprintln!("Launching in-process server");
+        client.connect_in_process(None).await?;
+    }
+
+    let server_name = client.server_name();
+    let server_name = server_name.as_deref().unwrap_or("<unknown>");
+    eprintln!("Server name: {}", server_name);
+
+    client.start_scanning().await?;
+    eprintln!("started scanning");
+    std::thread::sleep(Duration::from_secs(1));
+    client.stop_scanning().await?;
+
+    Ok(client)
+}
+
+#[derive(Debug)]
+enum GetDeviceError {
+    ZeroDevices,
+    MoreThanOneDevice,
+}
+
+fn get_device(
+    client: &ButtplugClient,
+) -> Result<Arc<ButtplugClientDevice>, GetDeviceError> {
+    // TODO: handle more than 1 device
+    let devices = client.devices();
+    let device = if devices.len() == 1 {
+        devices[0].clone()
+    } else if devices.len() == 0 {
+        return Err(GetDeviceError::ZeroDevices);
+    } else {
+        return Err(GetDeviceError::MoreThanOneDevice);
+    };
+    Ok(device)
+}
+
 #[derive(Parser)]
-struct Opt {
+enum Opt {
+    /// [WIP] Plays music file
+    Play(Play),
+    /// Listens to audio played
+    Listen(Listen),
+}
+
+fn main() {
+    match Opt::parse() {
+        Opt::Play(args) => play(args),
+        Opt::Listen(args) => listen(args),
+    }
+}
+
+#[derive(Parser)]
+struct Listen {
+    #[clap(short, default_value = "1.0")]
+    multiply: f32,
+}
+
+fn listen(args: Listen) {
+    let dur = Duration::from_millis(10);
+    let mut capture = AudioCapture::init(dur).unwrap();
+
+    let format = capture.format().unwrap();
+    // time to fill about half of AudioCapture's buffer
+    let actual_duration = Duration::from_secs_f32(
+        dur.as_secs_f32() * capture.buffer_frame_size as f32
+            / format.sample_rate as f32
+            / 1000.,
+    ) / 2;
+
+    let value = Arc::new(AtomicU32::new(0));
+    let value2 = value.clone();
+    let _t = std::thread::spawn(move || {
+        block_on(async move {
+            let client = start_bp_server().await.unwrap();
+            let device = get_device(&client).unwrap();
+            eprintln!("found device: {}", device.name);
+
+            let vib_count = device
+                .allowed_messages
+                .get(&MsgType::VibrateCmd)
+                .and_then(|x| x.feature_count)
+                .expect("no vibrators");
+            eprintln!("vibrators: {}", vib_count);
+            device.vibrate(VibrateCommand::Speed(1.0)).await.unwrap();
+
+            loop {
+                std::thread::sleep(dur);
+                let speed = value.load(Ordering::Relaxed);
+                let speed = f32::from_bits(speed);
+                let speeds = vec![speed as _; vib_count as _];
+                let res =
+                    device.vibrate(VibrateCommand::SpeedVec(speeds)).await;
+                if let Err(e) = res {
+                    eprintln!("{}", e);
+                    break;
+                }
+            }
+
+            client.stop_all_devices().await.unwrap();
+            client.disconnect().await.unwrap();
+        });
+    });
+
+    capture.start().unwrap();
+    loop {
+        std::thread::sleep(actual_duration);
+        let res = capture.read_samples::<(), _>(|samples, _| {
+            let speeds = calculate_power(samples, format.channels as usize);
+            let speed = (avg(&speeds) * args.multiply).clamp(0.0, 1.0);
+            value2.store(speed.to_bits(), Ordering::Relaxed);
+            Ok(())
+        });
+        if let Err(e) = res {
+            eprintln!("{:?}", e);
+            break;
+        }
+    }
+}
+
+fn calculate_power(samples: &[f32], channels: usize) -> Vec<f32> {
+    let mut sums = vec![0.0; channels];
+    for frame in samples.chunks_exact(channels) {
+        for (acc, sample) in sums.iter_mut().zip(frame) {
+            *acc += sample.abs().powi(2);
+        }
+    }
+    for sum in sums.iter_mut() {
+        *sum /= samples.len() as f32;
+        *sum = sum.sqrt().clamp(0.0, 1.0);
+    }
+    sums
+}
+
+fn avg(samples: &[f32]) -> f32 {
+    let len = samples.len();
+    samples.iter().sum::<f32>() / len as f32
+}
+
+#[derive(Parser)]
+struct Play {
     #[clap(short, long, default_value = "64")]
     chunk_size: usize,
     /// Path to audio file
     file: PathBuf,
 }
 
-fn main() {
-    let opts = Opt::parse();
-    let chunk_size = opts.chunk_size;
+fn play(args: Play) {
+    let chunk_size = args.chunk_size;
 
     // Start audio
     let (_stream, handle) = OutputStream::try_default().unwrap();
@@ -45,7 +199,7 @@ fn main() {
     sink.pause();
 
     // Prepare audio
-    let file_name = opts.file;
+    let file_name = args.file;
     let audio = open_decoder(file_name).unwrap().buffered();
     // .take_duration(Duration::from_secs(30));
     let (tx, rx) = flume::bounded(0);
@@ -59,70 +213,33 @@ fn main() {
     });
     sink.append(audio);
 
-    let remote_connector = RemoteConn::<_, JsonSer>::new(
-        WebsocketTransport::new_insecure_connector("ws://127.0.0.1:12345"),
-    );
     block_on(async {
-        let client = ButtplugClient::new("music-vibes");
-        // Fallback to in-process server
-        if let Err(e) = client.connect(remote_connector).await {
-            eprintln!("Couldn't connect to external server: {}", e);
-            eprintln!("Launching in-process server");
-            client.connect_in_process(None).await?;
-        }
-
-        let server_name = client.server_name();
-        let server_name = server_name.as_deref().unwrap_or("<unknown>");
-        println!("Server name: {}", server_name);
-
-        client.start_scanning().await?;
-        println!("started scanning");
-        std::thread::sleep(Duration::from_secs(1));
-        client.stop_scanning().await?;
+        let client = start_bp_server().await?;
 
         // TODO: handle more than 1 device
-        let devices = client.devices();
-        let device = if devices.len() == 1 {
-            devices[0].clone()
-        } else if devices.len() == 0 {
-            panic!("No devices detected")
-        } else {
-            panic!("Only one device for now, plz")
-        };
-        println!("found device: {}", device.name);
+        let device = get_device(&client).unwrap();
+        eprintln!("found device: {}", device.name);
 
         let vib_count = device
             .allowed_messages
             .get(&MsgType::VibrateCmd)
             .and_then(|x| x.feature_count)
             .expect("no vibrators");
-        println!("vibrators: {}", vib_count);
+        eprintln!("vibrators: {}", vib_count);
 
         sink.play();
         for chunk in audio2.chunks(chunk_size * channels) {
-            let mut sums = vec![0.0; channels];
-            for frame in chunk.chunks_exact(channels as _) {
-                for (acc, sample) in sums.iter_mut().zip(frame) {
-                    *acc += sample.abs().powi(2) as f64;
-                }
-            }
-            for sum in sums.iter_mut() {
-                *sum /= chunk.len() as f64;
-                *sum = sum.sqrt().clamp(0.0, 1.0);
-            }
-            let avg = {
-                let len = sums.len() as f64;
-                let avg = sums.into_iter().sum::<f64>() / len;
-                vec![avg; vib_count as usize]
-            };
-            device.vibrate(VibrateCommand::SpeedVec(avg)).await?;
+            let speeds = calculate_power(&chunk, channels);
+            let avg = avg(&speeds);
+            let speeds = vec![avg as _; vib_count as usize];
+            device.vibrate(VibrateCommand::SpeedVec(speeds)).await?;
 
             rx.recv().unwrap();
         }
         drop(rx);
         client.stop_all_devices().await?;
         client.disconnect().await?;
-        println!("buttplug finished");
+        eprintln!("buttplug finished");
         Ok::<_, ButtplugClientError>(())
     })
     .unwrap();

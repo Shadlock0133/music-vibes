@@ -10,3 +10,4 @@ buttplug = "5.1.5"
 rodio = "0.14.0"
 flume = "0.10.9"
 clap = { version = "3.0.0", features = ["derive"] }
+earplugs = { path = "../earplugs" }
