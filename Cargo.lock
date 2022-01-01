@@ -131,6 +131,7 @@ dependencies = [
 [[package]]
 name = "audio-capture"
 version = "0.1.0"
+source = "git+https://github.com/Shadlock0133/audio-capture?rev=d0319a7#d0319a7dcb9bdeae627bfc33f797313bcfdcf95e"
 dependencies = [
  "winapi",
 ]
