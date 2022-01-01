@@ -1,0 +1,11 @@
+[package]
+name = "music-vibes"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+buttplug = "5.1.5"
+rodio = "0.14.0"
+flume = "0.10.9"
