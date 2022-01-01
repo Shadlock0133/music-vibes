@@ -23,7 +23,7 @@ use buttplug::{
     util::async_manager::block_on,
 };
 use clap::Parser;
-use earplugs::win::capture::AudioCapture;
+use audio_capture::win::capture::AudioCapture;
 use parking_lot::Mutex;
 use rodio::{Decoder, OutputStream, Sink, Source};
 
