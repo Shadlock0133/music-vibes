@@ -1,8 +1,7 @@
 use std::{
-    env,
     fs::File,
     io::{self, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -18,6 +17,7 @@ use buttplug::{
     },
     util::async_manager::block_on,
 };
+use clap::Parser;
 use rodio::{Decoder, OutputStream, Sink, Source};
 
 fn open_decoder(
@@ -27,18 +27,25 @@ fn open_decoder(
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
 
+#[derive(Parser)]
+struct Opt {
+    #[clap(short, long, default_value = "64")]
+    chunk_size: usize,
+    /// Path to audio file
+    file: PathBuf,
+}
+
 fn main() {
-    let chunk_size: usize = 64;
+    let opts = Opt::parse();
+    let chunk_size = opts.chunk_size;
 
     let (_stream, handle) = OutputStream::try_default().unwrap();
     let sink = Sink::try_new(&handle).unwrap();
     sink.pause();
 
-    let file_name = env::args().nth(1).expect("Missing filename");
-    let audio = open_decoder(file_name)
-        .unwrap()
-        .buffered()
-        .take_duration(Duration::from_secs(30));
+    let file_name = opts.file;
+    let audio = open_decoder(file_name).unwrap().buffered();
+    // .take_duration(Duration::from_secs(30));
     let (tx, rx) = flume::bounded(0);
     let sample_rate = audio.sample_rate();
     let channels = audio.channels() as usize;
@@ -50,12 +57,16 @@ fn main() {
     });
     sink.append(audio);
 
+    let remote_connector = RCC::<_, ButtplugClientJSONSerializer>::new(
+        WSCT::new_insecure_connector("ws://127.0.0.1:12345"),
+    );
     block_on(async {
-        let connector = RCC::<_, ButtplugClientJSONSerializer>::new(
-            WSCT::new_insecure_connector("ws://127.0.0.1:12345"),
-        );
         let client = ButtplugClient::new("music-vibes");
-        client.connect(connector).await?;
+        if let Err(e) = client.connect(remote_connector).await {
+            eprintln!("Couldn't connect to external server: {}", e);
+            eprintln!("Launching in-process server");
+            client.connect_in_process(None).await?;
+        }
 
         let server_name = client.server_name();
         let server_name = server_name.as_deref().unwrap_or("<unknown>");
