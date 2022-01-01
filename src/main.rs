@@ -8,11 +8,11 @@ use std::{
 use buttplug::{
     client::{ButtplugClient, ButtplugClientError, VibrateCommand},
     connector::{
-        ButtplugRemoteClientConnector as RCC,
-        ButtplugWebsocketClientTransport as WSCT,
+        ButtplugRemoteClientConnector as RemoteConn,
+        ButtplugWebsocketClientTransport as WebsocketTransport,
     },
     core::messages::{
-        serializer::ButtplugClientJSONSerializer,
+        serializer::ButtplugClientJSONSerializer as JsonSer,
         ButtplugCurrentSpecDeviceMessageType as MsgType,
     },
     util::async_manager::block_on,
@@ -39,10 +39,12 @@ fn main() {
     let opts = Opt::parse();
     let chunk_size = opts.chunk_size;
 
+    // Start audio
     let (_stream, handle) = OutputStream::try_default().unwrap();
     let sink = Sink::try_new(&handle).unwrap();
     sink.pause();
 
+    // Prepare audio
     let file_name = opts.file;
     let audio = open_decoder(file_name).unwrap().buffered();
     // .take_duration(Duration::from_secs(30));
@@ -57,11 +59,12 @@ fn main() {
     });
     sink.append(audio);
 
-    let remote_connector = RCC::<_, ButtplugClientJSONSerializer>::new(
-        WSCT::new_insecure_connector("ws://127.0.0.1:12345"),
+    let remote_connector = RemoteConn::<_, JsonSer>::new(
+        WebsocketTransport::new_insecure_connector("ws://127.0.0.1:12345"),
     );
     block_on(async {
         let client = ButtplugClient::new("music-vibes");
+        // Fallback to in-process server
         if let Err(e) = client.connect(remote_connector).await {
             eprintln!("Couldn't connect to external server: {}", e);
             eprintln!("Launching in-process server");
@@ -77,6 +80,7 @@ fn main() {
         std::thread::sleep(Duration::from_secs(1));
         client.stop_scanning().await?;
 
+        // TODO: handle more than 1 device
         let devices = client.devices();
         let device = if devices.len() == 1 {
             devices[0].clone()
