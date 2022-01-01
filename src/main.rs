@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use audio_capture::win::capture::AudioCapture;
 use buttplug::{
     client::{
         ButtplugClient, ButtplugClientDevice, ButtplugClientError,
@@ -23,7 +24,6 @@ use buttplug::{
     util::async_manager::block_on,
 };
 use clap::Parser;
-use audio_capture::win::capture::AudioCapture;
 use parking_lot::Mutex;
 use rodio::{Decoder, OutputStream, Sink, Source};
 
@@ -83,7 +83,7 @@ fn get_device(
 enum Opt {
     /// [WIP] Plays music file
     Play(Play),
-    /// Listens to audio played
+    /// Listens to system audio
     Listen(Listen),
 }
 
