@@ -8,8 +8,7 @@ license = "MIT"
 
 [dependencies]
 buttplug = "5.1.5"
-rodio = "0.14.0"
 flume = "0.10.9"
 clap = { version = "3.0.0", features = ["derive"] }
-audio-capture = { git = "https://github.com/Shadlock0133/audio-capture", rev = "d0319a7" }
+audio-capture = { git = "https://github.com/Shadlock0133/audio-capture", rev = "76fd6e9" }
 parking_lot = "0.11.2"
