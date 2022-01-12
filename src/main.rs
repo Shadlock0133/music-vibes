@@ -1,8 +1,4 @@
-use std::{
-    collections::VecDeque,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use audio_capture::win::capture::AudioCapture;
 use buttplug::{
@@ -69,24 +65,39 @@ fn get_device(
 }
 
 #[derive(Parser)]
-enum Opt {
+struct Opt {
+    #[clap(subcommand)]
+    sub: Option<Subcommand>,
+}
+
+#[derive(Parser)]
+enum Subcommand {
     /// Listens to system audio
-    Listen(Listen),
+    Tui(Tui),
+    /// Launches gui
+    Gui(Gui),
+}
+
+#[derive(Parser)]
+struct Gui {
+    server_addr: Option<String>,
 }
 
 fn main() {
-    match Opt::parse() {
-        Opt::Listen(args) => listen(args),
+    let opt = Opt::parse();
+    match opt.sub {
+        Some(Subcommand::Tui(args)) => tui(args),
+        Some(Subcommand::Gui(_)) | None => todo!("gui"),
     }
 }
 
 #[derive(Parser)]
-struct Listen {
+struct Tui {
     #[clap(short, default_value = "1.0")]
     multiply: f32,
 }
 
-fn listen(args: Listen) {
+fn tui(args: Tui) {
     let stereo = false;
     let dur = Duration::from_millis(1);
     let mut capture = AudioCapture::init(dur).unwrap();
@@ -180,29 +191,4 @@ fn calculate_power(samples: &[f32], channels: usize) -> Vec<f32> {
 fn avg(samples: &[f32]) -> f32 {
     let len = samples.len();
     samples.iter().sum::<f32>() / len as f32
-}
-
-trait IterChunksExt: Iterator + Sized {
-    fn chunks(self, size: usize) -> IterChunks<Self> {
-        IterChunks(self, size)
-    }
-}
-
-impl<I> IterChunksExt for I where I: Iterator {}
-
-struct IterChunks<I: Iterator>(I, usize);
-
-impl<I> Iterator for IterChunks<I>
-where
-    I: Iterator,
-{
-    type Item = Vec<I::Item>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let mut res = Vec::with_capacity(self.1);
-        for _ in 0..self.1 {
-            res.push(self.0.next()?);
-        }
-        Some(res)
-    }
 }
