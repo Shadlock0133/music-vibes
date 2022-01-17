@@ -10,7 +10,7 @@ Turns audio into vibrations, using connected
 ## Caveats
 
 Created mostly to play around with qdot's excellent `buttplug` and my own
-`audio-capture` crate.
+`audio-capture` crate (Windows-only for now).
 
 Features two modes: Tui and Gui with Gui being the default.
 
