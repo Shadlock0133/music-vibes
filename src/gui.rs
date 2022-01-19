@@ -84,7 +84,9 @@ fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
             / 1000.,
     ) / 2;
 
-    let buffer_size = (format.sample_rate as f32 * dur.as_secs_f32()) as usize
+    let buffer_duration = Duration::from_millis(20);
+    let buffer_size = (format.sample_rate as f32
+        * buffer_duration.as_secs_f32()) as usize
         * format.channels as usize;
     let mut buf = VecDeque::new();
     buf.resize(buffer_size, 0.0);
@@ -158,17 +160,18 @@ impl epi::App for GuiApp {
                         self.runtime.spawn(self.client.stop_scanning());
                     }
                 }
-                
-                let mut low_pass_freq = self.low_pass_freq.load();
-                ui.label("Low pass freq.: ");
-                ui.add(Slider::new(&mut low_pass_freq, 0.0..=20000.0));
-                self.low_pass_freq.store(low_pass_freq);
+
+                let stop_button_width = 120.0;
+                ui.add_space(ui.available_width() - stop_button_width);
 
                 let stop_button = Button::new(
                     RichText::new("Stop all devices").color(Color32::BLACK),
                 )
                 .fill(Color32::from_rgb(240, 0, 0));
-                if ui.add_sized([60.0, 30.0], stop_button).clicked() {
+                if ui
+                    .add_sized([stop_button_width, 30.0], stop_button)
+                    .clicked()
+                {
                     self.runtime.spawn(self.client.stop_all_devices());
                     for device in self.devices.values_mut() {
                         device.is_enabled = false;
@@ -184,6 +187,14 @@ impl epi::App for GuiApp {
                 ));
                 ui.add(ProgressBar::new(sound_power));
             });
+
+            ui.horizontal(|ui| {
+                let mut low_pass_freq = self.low_pass_freq.load();
+                ui.label("Low pass freq.: ");
+                ui.add(Slider::new(&mut low_pass_freq, 0.0..=20000.0));
+                self.low_pass_freq.store(low_pass_freq);
+            });
+
             ui.heading("Devices");
             for device in self.client.devices() {
                 let props = self.devices.entry(device.index()).or_default();
