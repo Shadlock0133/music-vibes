@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use buttplug::{
     client::{ButtplugClient, ButtplugClientError},
     connector::{
@@ -24,6 +26,28 @@ pub async fn start_bp_server() -> Result<ButtplugClient, ButtplugClientError> {
     eprintln!("Server name: {}", server_name);
 
     Ok(client)
+}
+
+pub fn low_pass(
+    samples: &[f32],
+    time: Duration,
+    rc: f32,
+    channels: usize,
+) -> Vec<f32> {
+    let len = samples.len();
+    if len < channels {
+        return vec![];
+    }
+    let mut res = vec![0.0; len];
+    let dt = time.as_secs_f32();
+    let a = dt / (rc + dt);
+    for c in 0..channels {
+        res[c] = a * samples[c];
+    }
+    for i in channels..len {
+        res[i] = a * samples[i] + (1.0 - a) * res[i - channels];
+    }
+    res
 }
 
 pub fn calculate_power(samples: &[f32], channels: usize) -> Vec<f32> {

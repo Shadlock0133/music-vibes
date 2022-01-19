@@ -33,7 +33,8 @@ struct GuiApp {
     runtime: tokio::runtime::Runtime,
     client: ButtplugClient,
     devices: HashMap<u32, DeviceProps>,
-    current_sound_power: Arc<AtomicU32>,
+    current_sound_power: SharedF32,
+    low_pass_freq: SharedF32,
     _capture_thread: JoinHandle<()>,
     is_scanning: bool,
 }
@@ -54,7 +55,24 @@ impl Default for DeviceProps {
     }
 }
 
-fn capture_thread(current_sound_power: Arc<AtomicU32>) -> ! {
+#[derive(Clone)]
+struct SharedF32(Arc<AtomicU32>);
+
+impl SharedF32 {
+    fn new(v: f32) -> Self {
+        Self(Arc::new(AtomicU32::new(v.to_bits())))
+    }
+
+    fn store(&self, v: f32) {
+        self.0.store(v.to_bits(), Ordering::Relaxed);
+    }
+
+    fn load(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+}
+
+fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
     let dur = Duration::from_millis(1);
     let mut capture = AudioCapture::init(dur).unwrap();
 
@@ -85,9 +103,11 @@ fn capture_thread(current_sound_power: Arc<AtomicU32>) -> ! {
             .unwrap();
 
         let buf = buf.make_contiguous();
-        let speeds = util::calculate_power(&buf, format.channels as _);
+        let rc = 1.0 / low_pass_freq.load();
+        let filtered = util::low_pass(&buf, dur, rc, format.channels as _);
+        let speeds = util::calculate_power(&filtered, format.channels as _);
         let avg = util::avg(&speeds).clamp(0.0, 1.0);
-        current_sound_power.store(avg.to_bits(), Ordering::Relaxed);
+        sound_power.store(avg);
     }
 }
 
@@ -96,24 +116,24 @@ impl GuiApp {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let client = runtime.block_on(util::start_bp_server()).unwrap();
         let devices = Default::default();
-        let current_sound_power = Arc::new(AtomicU32::new(0));
+        let current_sound_power = SharedF32::new(0.0);
         let current_sound_power2 = current_sound_power.clone();
+        let low_pass_freq = SharedF32::new(20000.0);
+        let low_pass_freq2 = low_pass_freq.clone();
 
-        let _capture_thread =
-            std::thread::spawn(|| capture_thread(current_sound_power2));
+        let _capture_thread = std::thread::spawn(|| {
+            capture_thread(current_sound_power2, low_pass_freq2)
+        });
 
         GuiApp {
             runtime,
             client,
             devices,
             current_sound_power,
+            low_pass_freq,
             _capture_thread,
             is_scanning: false,
         }
-    }
-
-    fn load_sound_power(&self) -> f32 {
-        f32::from_bits(self.current_sound_power.load(Ordering::Relaxed))
     }
 }
 
@@ -138,6 +158,12 @@ impl epi::App for GuiApp {
                         self.runtime.spawn(self.client.stop_scanning());
                     }
                 }
+                
+                let mut low_pass_freq = self.low_pass_freq.load();
+                ui.label("Low pass freq.: ");
+                ui.add(Slider::new(&mut low_pass_freq, 0.0..=20000.0));
+                self.low_pass_freq.store(low_pass_freq);
+
                 let stop_button = Button::new(
                     RichText::new("Stop all devices").color(Color32::BLACK),
                 )
@@ -150,7 +176,7 @@ impl epi::App for GuiApp {
                 }
             });
             ui.separator();
-            let sound_power = self.load_sound_power();
+            let sound_power = self.current_sound_power.load();
             ui.horizontal(|ui| {
                 ui.label(format!(
                     "Current volume: {:.2}%",
@@ -162,10 +188,15 @@ impl epi::App for GuiApp {
             for device in self.client.devices() {
                 let props = self.devices.entry(device.index()).or_default();
                 ui.group(|ui| {
-                    #[cfg(debug_assertions)]
-                    ui.label(format!("({}) {}", device.index(), device.name));
-                    #[cfg(not(debug_assertions))]
-                    ui.label(&device.name);
+                    if cfg!(debug_assertions) {
+                        ui.label(format!(
+                            "({}) {}",
+                            device.index(),
+                            device.name
+                        ));
+                    } else {
+                        ui.label(&device.name);
+                    }
                     if let Ok(bat) =
                         self.runtime.block_on(device.battery_level())
                     {
