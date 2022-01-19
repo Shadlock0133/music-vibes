@@ -4,7 +4,7 @@
 vibrations, using connected [`buttplug`](https://buttplug.io/)-compatible
 hardware
 
-![image](./screenshot.png)
+![gif](./mv.gif)
 
 ## Caveats
 
