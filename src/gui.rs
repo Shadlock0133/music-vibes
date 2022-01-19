@@ -229,15 +229,20 @@ impl epi::App for GuiApp {
                             .clicked()
                         {
                             props.is_enabled = !props.is_enabled;
+                            if !props.is_enabled {
+                                self.runtime.spawn(device.stop());
+                            }
                         }
                         ui.label("Multiplier: ");
                         ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
                         ui.label("Maximum: ");
                         ui.add(Slider::new(&mut props.max, 0.0..=1.0));
                     });
-                    self.runtime.spawn(
-                        device.vibrate(VibrateCommand::Speed(speed as _)),
-                    );
+                    if props.is_enabled {
+                        self.runtime.spawn(
+                            device.vibrate(VibrateCommand::Speed(speed as _)),
+                        );
+                    }
                 });
             }
         });
