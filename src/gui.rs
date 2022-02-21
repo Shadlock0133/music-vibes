@@ -16,7 +16,7 @@ use eframe::{
     epi,
 };
 
-use crate::util;
+use crate::util::{self, MinCutoff};
 
 #[derive(Parser, Default)]
 pub struct Gui {
@@ -42,6 +42,7 @@ struct GuiApp {
 struct DeviceProps {
     is_enabled: bool,
     multiplier: f32,
+    min: f32,
     max: f32,
 }
 
@@ -50,8 +51,26 @@ impl Default for DeviceProps {
         Self {
             is_enabled: false,
             multiplier: 1.0,
+            min: 0.0,
             max: 1.0,
         }
+    }
+}
+
+impl DeviceProps {
+    fn calculate_visual_output(&self, input: f32) -> (f32, bool) {
+        let power = if self.is_enabled {
+            (input * self.multiplier).clamp(0.0, self.max)
+        } else {
+            0.0
+        };
+        (power, power < self.min)
+    }
+
+    fn calculate_output(&self, input: f32) -> f32 {
+        (input * self.multiplier)
+            .clamp(0.0, self.max)
+            .min_cutoff(self.min)
     }
 }
 
@@ -191,7 +210,11 @@ impl epi::App for GuiApp {
             ui.horizontal(|ui| {
                 let mut low_pass_freq = self.low_pass_freq.load();
                 ui.label("Low pass freq.: ");
-                ui.add(Slider::new(&mut low_pass_freq, 0.0..=20000.0));
+                ui.add(
+                    Slider::new(&mut low_pass_freq, 0.0..=20_000.0)
+                        .logarithmic(true)
+                        .integer(),
+                );
                 self.low_pass_freq.store(low_pass_freq);
             });
 
@@ -213,14 +236,14 @@ impl epi::App for GuiApp {
                     {
                         ui.label(format!("Battery: {}", bat));
                     }
-                    let speed = if props.is_enabled {
-                        (sound_power * props.multiplier).clamp(0.0, props.max)
-                    } else {
-                        0.0
-                    };
+                    let (speed, cutoff) =
+                        props.calculate_visual_output(sound_power);
 
                     ui.horizontal(|ui| {
                         ui.label(format!("{:.2}%", speed * 100.0));
+                        if cutoff {
+                            ui.visuals_mut().selection.bg_fill = Color32::RED;
+                        }
                         ui.add(ProgressBar::new(speed));
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -235,12 +258,15 @@ impl epi::App for GuiApp {
                         }
                         ui.label("Multiplier: ");
                         ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
+                        ui.label("Minimum (cut-off): ");
+                        ui.add(Slider::new(&mut props.min, 0.0..=1.0));
                         ui.label("Maximum: ");
                         ui.add(Slider::new(&mut props.max, 0.0..=1.0));
                     });
                     if props.is_enabled {
+                        let speed = props.calculate_output(sound_power) as f64;
                         self.runtime.spawn(
-                            device.vibrate(VibrateCommand::Speed(speed as _)),
+                            device.vibrate(VibrateCommand::Speed(speed)),
                         );
                     }
                 });

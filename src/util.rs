@@ -68,3 +68,17 @@ pub fn avg(samples: &[f32]) -> f32 {
     let len = samples.len();
     samples.iter().sum::<f32>() / len as f32
 }
+
+pub trait MinCutoff {
+    fn min_cutoff(self, min: Self) -> Self;
+}
+
+impl MinCutoff for f32 {
+    fn min_cutoff(self, min: Self) -> Self {
+        if self < min {
+            0.0
+        } else {
+            self
+        }
+    }
+}

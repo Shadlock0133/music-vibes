@@ -16,3 +16,6 @@ for more usage info.
 
 Currently, tui can only handle one device, and will panic if there zero, two
 or more devices connected.
+
+Current implementation of cutoff filter is "sharp", that is, it will jump from
+zero to above set `min` value, with no smoothing, so be careful with that.
