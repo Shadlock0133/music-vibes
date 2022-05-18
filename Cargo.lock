@@ -83,16 +83,15 @@ checksum = "08f9b8508dccb7687a1d6c4ce66b2b0ecef467c94667de27d8d7fe1f8d2a9cdc"
 
 [[package]]
 name = "arboard"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6045ca509e4abacde2b884ac4618a51d0c017b5d85a3ee84a7226eb33b3154a9"
+checksum = "dc120354d1b5ec6d7aaf4876b602def75595937b5e15d356eb554ab5177e08bb"
 dependencies = [
  "clipboard-win",
  "log",
  "objc",
  "objc-foundation",
  "objc_id",
- "once_cell",
  "parking_lot 0.12.0",
  "thiserror",
  "winapi",
@@ -283,6 +282,8 @@ checksum = "a4a45a46ab1f2412e53d3a0ade76ffad2025804294569aae387231a0cd6e0899"
 [[package]]
 name = "buttplug"
 version = "5.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cfe1321f37e1bfc24a10c7a382ea94fc47270a0ad2f30c419d28059b97a87e1"
 dependencies = [
  "async-stream",
  "async-trait",
