@@ -11,10 +11,7 @@ use std::{
 use audio_capture::win::capture::AudioCapture;
 use buttplug::client::{ButtplugClient, VibrateCommand};
 use clap::Parser;
-use eframe::{
-    egui::{self, Button, Color32, ProgressBar, RichText, Slider},
-    epi,
-};
+use eframe::egui::{self, Button, Color32, ProgressBar, RichText, Slider};
 
 use crate::util::{self, MinCutoff};
 
@@ -26,7 +23,11 @@ pub struct Gui {
 pub fn gui(_args: Gui) {
     let app = GuiApp::new();
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native(Box::new(app), native_options);
+    eframe::run_native(
+        "Music Vibes",
+        native_options,
+        Box::new(|_| Box::new(app)),
+    );
 }
 
 struct GuiApp {
@@ -158,12 +159,8 @@ impl GuiApp {
     }
 }
 
-impl epi::App for GuiApp {
-    fn name(&self) -> &str {
-        "Music Vibes"
-    }
-
-    fn update(&mut self, ctx: &egui::CtxRef, _frame: &epi::Frame) {
+impl eframe::App for GuiApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let scan_label = if self.is_scanning {

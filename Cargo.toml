@@ -7,10 +7,13 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-buttplug = "5.1.6"
-flume = "0.10.9"
-clap = { version = "3.0.4", features = ["derive"] }
+buttplug = "5.1.10"
+flume = "0.10.12"
+clap = { version = "3.1.18", features = ["derive"] }
 audio-capture = { git = "https://github.com/Shadlock0133/audio-capture", rev = "76fd6e9" }
-parking_lot = "0.11.2"
-eframe = "0.16.0"
-tokio = "1.15.0"
+parking_lot = "0.12.0"
+eframe = "0.18.0"
+tokio = "1.18.2"
+
+[patch.crates-io]
+buttplug = { path = "../buttplug/buttplug" }
