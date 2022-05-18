@@ -60,11 +60,7 @@ impl Default for DeviceProps {
 
 impl DeviceProps {
     fn calculate_visual_output(&self, input: f32) -> (f32, bool) {
-        let power = if self.is_enabled {
-            (input * self.multiplier).clamp(0.0, self.max)
-        } else {
-            0.0
-        };
+        let power = (input * self.multiplier).clamp(0.0, self.max);
         (power, power < self.min)
     }
 
@@ -240,6 +236,9 @@ impl eframe::App for GuiApp {
                         ui.label(format!("{:.2}%", speed * 100.0));
                         if cutoff {
                             ui.visuals_mut().selection.bg_fill = Color32::RED;
+                        }
+                        if !props.is_enabled {
+                            ui.visuals_mut().selection.bg_fill = Color32::GRAY;
                         }
                         ui.add(ProgressBar::new(speed));
                     });
