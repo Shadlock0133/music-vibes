@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod gui;
-mod tui;
 mod util;
 
 use clap::Parser;
@@ -15,14 +14,12 @@ struct Opt {
 
 #[derive(Parser)]
 enum Subcommand {
-    Tui(tui::Tui),
     Gui(gui::Gui),
 }
 
 fn main() {
     let opt = Opt::parse();
     match opt.sub {
-        Some(Subcommand::Tui(args)) => tui::tui(args),
         Some(Subcommand::Gui(args)) => gui::gui(args),
         None => gui::gui(Default::default()),
     }
