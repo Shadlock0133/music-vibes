@@ -21,8 +21,5 @@ which creates executable at `target/release/music-vibes{.exe}`
 Created mostly to play around with qdot's excellent `buttplug` and my own
 `audio-capture` crate.
 
-Features two modes: Tui and Gui with Gui being the default. Run with `--help`
-for more usage info.
-
 Current implementation of cutoff filter is "sharp", that is, it will jump from
 zero to above set `min` value, with no smoothing, so be careful with that.
