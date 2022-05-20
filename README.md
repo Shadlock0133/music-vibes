@@ -6,6 +6,16 @@ hardware
 
 ![gif](./mv.gif)
 
+## Installing
+
+First, clone the repo with `git clone https://github.com/Shadlock0133/music-vibes.git`
+or download it clicking in top-right corner `Code` > `Download ZIP`
+  
+Then install with `cargo install --path .`
+
+You can also build without installing using `cargo build --release`,
+which creates executable at `target/release/music-vibes{.exe}`
+
 ## Caveats
 
 Created mostly to play around with qdot's excellent `buttplug` and my own
