@@ -8,12 +8,14 @@ hardware
 
 ## Installing
 
-First, clone the repo with `git clone https://github.com/Shadlock0133/music-vibes.git`
+0. You will require working Rust toolchain. You can install it is by using [rustup](https://rustup.rs/).
+
+1. Clone the repo with `git clone https://github.com/Shadlock0133/music-vibes.git`
 or download it clicking in top-right corner `Code` > `Download ZIP`
   
-Then install with `cargo install --path .`
+2. Install with `cargo install --path .`
 
-You can also build without installing using `cargo build --release`,
+3. (optional) You can also build without installing using `cargo build --release`,
 which creates executable at `target/release/music-vibes{.exe}`
 
 ## Caveats
