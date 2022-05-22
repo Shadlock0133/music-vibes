@@ -16,7 +16,7 @@ use eframe::{
         self, Button, Color32, ProgressBar, RichText, Slider, Ui, Visuals,
         Window,
     },
-    CreationContext, Storage,
+    get_value, set_value, CreationContext, Storage,
 };
 use tokio::runtime::Runtime;
 
@@ -153,8 +153,8 @@ impl GuiApp {
             capture_thread(current_sound_power2, low_pass_freq2)
         });
 
-        let use_dark_mode = ctx.storage.map_or(true, |s| {
-            s.get_string("dark_mode").as_deref() == Some("true")
+        let use_dark_mode = ctx.storage.map_or(true, |storage| {
+            get_value(storage, "dark_mode").unwrap_or(true)
         });
 
         GuiApp {
@@ -175,8 +175,7 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn save(&mut self, storage: &mut dyn Storage) {
-        let dark_mode = if self.use_dark_mode { "true" } else { "false" };
-        storage.set_string("dark_mode", dark_mode.into());
+        set_value(storage, "dark_mode", &self.use_dark_mode);
         storage.flush();
     }
 
