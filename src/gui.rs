@@ -9,9 +9,12 @@ use std::{
 };
 
 use audio_capture::win::capture::AudioCapture;
-use buttplug::client::{ButtplugClient, VibrateCommand};
+use buttplug::client::{ButtplugClient, ButtplugClientDevice, VibrateCommand};
 use clap::Parser;
-use eframe::egui::{self, Button, Color32, ProgressBar, RichText, Slider};
+use eframe::egui::{
+    self, Button, Color32, ProgressBar, RichText, Slider, Ui, Visuals, Window,
+};
+use tokio::runtime::Runtime;
 
 use crate::util::{self, MinCutoff};
 
@@ -38,6 +41,8 @@ struct GuiApp {
     low_pass_freq: SharedF32,
     _capture_thread: JoinHandle<()>,
     is_scanning: bool,
+    use_dark_mode: bool,
+    show_settings: bool,
 }
 
 struct DeviceProps {
@@ -151,12 +156,19 @@ impl GuiApp {
             low_pass_freq,
             _capture_thread,
             is_scanning: false,
+            use_dark_mode: true,
+            show_settings: false,
         }
     }
 }
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.use_dark_mode {
+            ctx.set_visuals(Visuals::dark());
+        } else {
+            ctx.set_visuals(Visuals::light());
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let scan_label = if self.is_scanning {
@@ -171,6 +183,10 @@ impl eframe::App for GuiApp {
                     } else {
                         self.runtime.spawn(self.client.stop_scanning());
                     }
+                }
+
+                if ui.button("Settings").clicked() {
+                    self.show_settings = true;
                 }
 
                 let stop_button_width = 120.0;
@@ -214,60 +230,71 @@ impl eframe::App for GuiApp {
             ui.heading("Devices");
             for device in self.client.devices() {
                 let props = self.devices.entry(device.index()).or_default();
-                ui.group(|ui| {
-                    if cfg!(debug_assertions) {
-                        ui.label(format!(
-                            "({}) {}",
-                            device.index(),
-                            device.name
-                        ));
-                    } else {
-                        ui.label(&device.name);
-                    }
-                    if let Ok(bat) =
-                        self.runtime.block_on(device.battery_level())
-                    {
-                        ui.label(format!("Battery: {}", bat));
-                    }
-                    let (speed, cutoff) =
-                        props.calculate_visual_output(sound_power);
-
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{:.2}%", speed * 100.0));
-                        if cutoff {
-                            ui.visuals_mut().selection.bg_fill = Color32::RED;
-                        }
-                        if !props.is_enabled {
-                            ui.visuals_mut().selection.bg_fill = Color32::GRAY;
-                        }
-                        ui.add(ProgressBar::new(speed));
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .selectable_label(props.is_enabled, "Enable")
-                            .clicked()
-                        {
-                            props.is_enabled = !props.is_enabled;
-                            if !props.is_enabled {
-                                self.runtime.spawn(device.stop());
-                            }
-                        }
-                        ui.label("Multiplier: ");
-                        ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
-                        ui.label("Minimum (cut-off): ");
-                        ui.add(Slider::new(&mut props.min, 0.0..=1.0));
-                        ui.label("Maximum: ");
-                        ui.add(Slider::new(&mut props.max, 0.0..=1.0));
-                    });
-                    if props.is_enabled {
-                        let speed = props.calculate_output(sound_power) as f64;
-                        self.runtime.spawn(
-                            device.vibrate(VibrateCommand::Speed(speed)),
-                        );
-                    }
-                });
+                device_widget(
+                    ui,
+                    device,
+                    props,
+                    sound_power,
+                    &mut self.runtime,
+                );
             }
         });
+        Window::new("Settings")
+            .open(&mut self.show_settings)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.checkbox(&mut self.use_dark_mode, "Use dark mode");
+            });
         ctx.request_repaint();
     }
+}
+
+fn device_widget(
+    ui: &mut Ui,
+    device: Arc<ButtplugClientDevice>,
+    props: &mut DeviceProps,
+    sound_power: f32,
+    runtime: &Runtime,
+) {
+    ui.group(|ui| {
+        if cfg!(debug_assertions) {
+            ui.label(format!("({}) {}", device.index(), device.name));
+        } else {
+            ui.label(&device.name);
+        }
+        if let Ok(bat) = runtime.block_on(device.battery_level()) {
+            ui.label(format!("Battery: {}", bat));
+        }
+        let (speed, cutoff) = props.calculate_visual_output(sound_power);
+
+        ui.horizontal(|ui| {
+            ui.label(format!("{:.2}%", speed * 100.0));
+            if cutoff {
+                ui.visuals_mut().selection.bg_fill = Color32::RED;
+            }
+            if !props.is_enabled {
+                ui.visuals_mut().selection.bg_fill = Color32::GRAY;
+            }
+            ui.add(ProgressBar::new(speed));
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.selectable_label(props.is_enabled, "Enable").clicked() {
+                props.is_enabled = !props.is_enabled;
+                if !props.is_enabled {
+                    runtime.spawn(device.stop());
+                }
+            }
+            ui.label("Multiplier: ");
+            ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
+            ui.label("Minimum (cut-off): ");
+            ui.add(Slider::new(&mut props.min, 0.0..=1.0));
+            ui.label("Maximum: ");
+            ui.add(Slider::new(&mut props.max, 0.0..=1.0));
+        });
+        if props.is_enabled {
+            let speed = props.calculate_output(sound_power) as f64;
+            runtime.spawn(device.vibrate(VibrateCommand::Speed(speed)));
+        }
+    });
 }
