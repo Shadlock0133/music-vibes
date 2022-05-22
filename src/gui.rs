@@ -11,8 +11,12 @@ use std::{
 use audio_capture::win::capture::AudioCapture;
 use buttplug::client::{ButtplugClient, ButtplugClientDevice, VibrateCommand};
 use clap::Parser;
-use eframe::egui::{
-    self, Button, Color32, ProgressBar, RichText, Slider, Ui, Visuals, Window,
+use eframe::{
+    egui::{
+        self, Button, Color32, ProgressBar, RichText, Slider, Ui, Visuals,
+        Window,
+    },
+    CreationContext, Storage,
 };
 use tokio::runtime::Runtime;
 
@@ -24,12 +28,11 @@ pub struct Gui {
 }
 
 pub fn gui(_args: Gui) {
-    let app = GuiApp::new();
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "Music Vibes",
         native_options,
-        Box::new(|_| Box::new(app)),
+        Box::new(|ctx| Box::new(GuiApp::new(ctx))),
     );
 }
 
@@ -40,9 +43,11 @@ struct GuiApp {
     current_sound_power: SharedF32,
     low_pass_freq: SharedF32,
     _capture_thread: JoinHandle<()>,
+    // volatile info
     is_scanning: bool,
-    use_dark_mode: bool,
     show_settings: bool,
+    // persistent settings
+    use_dark_mode: bool,
 }
 
 struct DeviceProps {
@@ -135,7 +140,7 @@ fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
 }
 
 impl GuiApp {
-    fn new() -> Self {
+    fn new(ctx: &CreationContext) -> Self {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let client = runtime.block_on(util::start_bp_server()).unwrap();
         let devices = Default::default();
@@ -148,6 +153,10 @@ impl GuiApp {
             capture_thread(current_sound_power2, low_pass_freq2)
         });
 
+        let use_dark_mode = ctx.storage.map_or(true, |s| {
+            s.get_string("dark_mode").as_deref() == Some("true")
+        });
+
         GuiApp {
             runtime,
             client,
@@ -155,14 +164,22 @@ impl GuiApp {
             current_sound_power,
             low_pass_freq,
             _capture_thread,
+
             is_scanning: false,
-            use_dark_mode: true,
             show_settings: false,
+
+            use_dark_mode,
         }
     }
 }
 
 impl eframe::App for GuiApp {
+    fn save(&mut self, storage: &mut dyn Storage) {
+        let dark_mode = if self.use_dark_mode { "true" } else { "false" };
+        storage.set_string("dark_mode", dark_mode.into());
+        storage.flush();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.use_dark_mode {
             ctx.set_visuals(Visuals::dark());
