@@ -3,7 +3,6 @@ use std::time::Duration;
 use buttplug::{
     client::{ButtplugClient, ButtplugClientError},
     connector::{
-        ButtplugInProcessClientConnector as InProcessConn,
         ButtplugRemoteClientConnector as RemoteConn,
         ButtplugWebsocketClientTransport as WebsocketTransport,
     },
@@ -19,8 +18,7 @@ pub async fn start_bp_server() -> Result<ButtplugClient, ButtplugClientError> {
     if let Err(e) = client.connect(remote_connector).await {
         eprintln!("Couldn't connect to external server: {}", e);
         eprintln!("Launching in-process server");
-        let in_process = InProcessConn::default();
-        client.connect(in_process).await?;
+        client.connect_in_process(None).await?;
     }
 
     let server_name = client.server_name();
