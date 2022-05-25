@@ -1,4 +1,10 @@
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use buttplug::{
     client::{ButtplugClient, ButtplugClientError},
@@ -26,6 +32,23 @@ pub async fn start_bp_server() -> Result<ButtplugClient, ButtplugClientError> {
     eprintln!("Server name: {}", server_name);
 
     Ok(client)
+}
+
+#[derive(Clone)]
+pub struct SharedF32(Arc<AtomicU32>);
+
+impl SharedF32 {
+    pub fn new(v: f32) -> Self {
+        Self(Arc::new(AtomicU32::new(v.to_bits())))
+    }
+
+    pub fn store(&self, v: f32) {
+        self.0.store(v.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn load(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
 }
 
 pub fn low_pass(

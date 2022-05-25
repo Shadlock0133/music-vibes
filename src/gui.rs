@@ -1,9 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
+    sync::Arc,
     thread::JoinHandle,
     time::Duration,
 };
@@ -16,11 +13,14 @@ use eframe::{
         self, Button, Color32, ProgressBar, RichText, Slider, Ui, Visuals,
         Window,
     },
-    get_value, set_value, CreationContext, Storage,
+    CreationContext, Storage,
 };
 use tokio::runtime::Runtime;
 
-use crate::util::{self, MinCutoff};
+use crate::{
+    settings::Settings,
+    util::{self, MinCutoff, SharedF32},
+};
 
 #[derive(Parser, Default)]
 pub struct Gui {
@@ -41,13 +41,12 @@ struct GuiApp {
     client: ButtplugClient,
     devices: HashMap<u32, DeviceProps>,
     current_sound_power: SharedF32,
-    low_pass_freq: SharedF32,
     _capture_thread: JoinHandle<()>,
     // volatile info
     is_scanning: bool,
     show_settings: bool,
     // persistent settings
-    use_dark_mode: bool,
+    settings: Settings,
 }
 
 struct DeviceProps {
@@ -78,23 +77,6 @@ impl DeviceProps {
         (input * self.multiplier)
             .clamp(0.0, self.max)
             .min_cutoff(self.min)
-    }
-}
-
-#[derive(Clone)]
-struct SharedF32(Arc<AtomicU32>);
-
-impl SharedF32 {
-    fn new(v: f32) -> Self {
-        Self(Arc::new(AtomicU32::new(v.to_bits())))
-    }
-
-    fn store(&self, v: f32) {
-        self.0.store(v.to_bits(), Ordering::Relaxed);
-    }
-
-    fn load(&self) -> f32 {
-        f32::from_bits(self.0.load(Ordering::Relaxed))
     }
 }
 
@@ -146,15 +128,12 @@ impl GuiApp {
         let devices = Default::default();
         let current_sound_power = SharedF32::new(0.0);
         let current_sound_power2 = current_sound_power.clone();
-        let low_pass_freq = SharedF32::new(20000.0);
-        let low_pass_freq2 = low_pass_freq.clone();
+
+        let settings = ctx.storage.map(Settings::load).unwrap_or_default();
+        let low_pass_freq = settings.low_pass_freq.clone();
 
         let _capture_thread = std::thread::spawn(|| {
-            capture_thread(current_sound_power2, low_pass_freq2)
-        });
-
-        let use_dark_mode = ctx.storage.map_or(true, |storage| {
-            get_value(storage, "dark_mode").unwrap_or(true)
+            capture_thread(current_sound_power2, low_pass_freq)
         });
 
         GuiApp {
@@ -162,25 +141,22 @@ impl GuiApp {
             client,
             devices,
             current_sound_power,
-            low_pass_freq,
             _capture_thread,
-
             is_scanning: false,
             show_settings: false,
-
-            use_dark_mode,
+            settings,
         }
     }
 }
 
 impl eframe::App for GuiApp {
     fn save(&mut self, storage: &mut dyn Storage) {
-        set_value(storage, "dark_mode", &self.use_dark_mode);
+        self.settings.save(storage);
         storage.flush();
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.use_dark_mode {
+        if self.settings.use_dark_mode {
             ctx.set_visuals(Visuals::dark());
         } else {
             ctx.set_visuals(Visuals::light());
@@ -233,14 +209,14 @@ impl eframe::App for GuiApp {
             });
 
             ui.horizontal(|ui| {
-                let mut low_pass_freq = self.low_pass_freq.load();
+                let mut low_pass_freq = self.settings.low_pass_freq.load();
                 ui.label("Low pass freq.: ");
                 ui.add(
                     Slider::new(&mut low_pass_freq, 0.0..=20_000.0)
                         .logarithmic(true)
                         .integer(),
                 );
-                self.low_pass_freq.store(low_pass_freq);
+                self.settings.low_pass_freq.store(low_pass_freq);
             });
 
             ui.heading("Devices");
@@ -260,7 +236,7 @@ impl eframe::App for GuiApp {
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.checkbox(&mut self.use_dark_mode, "Use dark mode");
+                ui.checkbox(&mut self.settings.use_dark_mode, "Use dark mode");
             });
         ctx.request_repaint();
     }
