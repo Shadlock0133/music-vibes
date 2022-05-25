@@ -24,15 +24,16 @@ use crate::{
 
 #[derive(Parser, Default)]
 pub struct Gui {
+    #[clap(short, long)]
     server_addr: Option<String>,
 }
 
-pub fn gui(_args: Gui) {
+pub fn gui(args: Gui) {
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "Music Vibes",
         native_options,
-        Box::new(|ctx| Box::new(GuiApp::new(ctx))),
+        Box::new(|ctx| Box::new(GuiApp::new(args.server_addr, ctx))),
     );
 }
 
@@ -114,7 +115,7 @@ fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
 
         let buf = buf.make_contiguous();
         let rc = 1.0 / low_pass_freq.load();
-        let filtered = util::low_pass(&buf, dur, rc, format.channels as _);
+        let filtered = util::low_pass(buf, dur, rc, format.channels as _);
         let speeds = util::calculate_power(&filtered, format.channels as _);
         let avg = util::avg(&speeds).clamp(0.0, 1.0);
         sound_power.store(avg);
@@ -122,9 +123,11 @@ fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
 }
 
 impl GuiApp {
-    fn new(ctx: &CreationContext) -> Self {
+    fn new(server_addr: Option<String>, ctx: &CreationContext) -> Self {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let client = runtime.block_on(util::start_bp_server()).unwrap();
+        let client = runtime
+            .block_on(util::start_bp_server(server_addr))
+            .unwrap();
         let devices = Default::default();
         let current_sound_power = SharedF32::new(0.0);
         let current_sound_power2 = current_sound_power.clone();
@@ -222,13 +225,7 @@ impl eframe::App for GuiApp {
             ui.heading("Devices");
             for device in self.client.devices() {
                 let props = self.devices.entry(device.index()).or_default();
-                device_widget(
-                    ui,
-                    device,
-                    props,
-                    sound_power,
-                    &mut self.runtime,
-                );
+                device_widget(ui, device, props, sound_power, &self.runtime);
             }
         });
         Window::new("Settings")

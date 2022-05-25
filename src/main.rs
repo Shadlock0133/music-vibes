@@ -6,22 +6,9 @@ mod settings;
 mod util;
 
 use clap::Parser;
-
-#[derive(Parser)]
-struct Opt {
-    #[clap(subcommand)]
-    sub: Option<Subcommand>,
-}
-
-#[derive(Parser)]
-enum Subcommand {
-    Gui(gui::Gui),
-}
+use gui::Gui;
 
 fn main() {
-    let opt = Opt::parse();
-    match opt.sub {
-        Some(Subcommand::Gui(args)) => gui::gui(args),
-        None => gui::gui(Default::default()),
-    }
+    let args = Gui::parse();
+    gui::gui(args);
 }

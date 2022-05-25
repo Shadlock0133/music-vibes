@@ -15,9 +15,12 @@ use buttplug::{
     core::messages::serializer::ButtplugClientJSONSerializer as JsonSer,
 };
 
-pub async fn start_bp_server() -> Result<ButtplugClient, ButtplugClientError> {
+pub async fn start_bp_server(
+    server_addr: Option<String>,
+) -> Result<ButtplugClient, ButtplugClientError> {
+    let addr = server_addr.as_deref().unwrap_or("ws://127.0.0.1:12345");
     let remote_connector = RemoteConn::<_, JsonSer>::new(
-        WebsocketTransport::new_insecure_connector("ws://127.0.0.1:12345"),
+        WebsocketTransport::new_insecure_connector(addr),
     );
     let client = ButtplugClient::new("music-vibes");
     // Fallback to in-process server
@@ -80,7 +83,7 @@ pub fn calculate_power(samples: &[f32], channels: usize) -> Vec<f32> {
             *acc += sample.abs().powi(2);
         }
     }
-    for sum in sums.iter_mut() {
+    for sum in &mut sums {
         *sum /= samples.len() as f32;
         *sum = sum.sqrt().clamp(0.0, 1.0);
     }
