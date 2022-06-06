@@ -6,9 +6,16 @@ hardware
 
 ![gif](./mv.gif)
 
-## Installing
+## Download
 
-0. You will require working Rust toolchain. You can install it is by using [rustup](https://rustup.rs/).
+Go to https://github.com/Shadlock0133/music-vibes/releases/latest, and download
+"music-vibes.exe" from Assets
+
+## Install from source
+
+If you want to compile program manually from source, here are the steps:
+
+0. You will require working Rust toolchain. You can install it by using [rustup](https://rustup.rs/).
 
 1. Clone the repo with `git clone https://github.com/Shadlock0133/music-vibes.git`
 or download it clicking in top-right corner `Code` > `Download ZIP`
