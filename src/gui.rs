@@ -159,11 +159,11 @@ impl eframe::App for GuiApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.settings.use_dark_mode {
-            ctx.set_visuals(Visuals::dark());
-        } else {
-            ctx.set_visuals(Visuals::light());
-        }
+        let visuals = match self.settings.use_dark_mode {
+            true => Visuals::dark(),
+            false => Visuals::light(),
+        };
+        ctx.set_visuals(visuals);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let scan_label = if self.is_scanning {
@@ -221,6 +221,7 @@ impl eframe::App for GuiApp {
                 );
                 self.settings.low_pass_freq.store(low_pass_freq);
             });
+            ui.separator();
 
             ui.heading("Devices");
             for device in self.client.devices() {
