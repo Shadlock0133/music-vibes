@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use audio_capture::win::capture::AudioCapture;
@@ -43,7 +43,6 @@ struct GuiApp {
     devices: HashMap<u32, DeviceProps>,
     current_sound_power: SharedF32,
     _capture_thread: JoinHandle<()>,
-    // volatile info
     is_scanning: bool,
     show_settings: bool,
     // persistent settings
@@ -52,35 +51,57 @@ struct GuiApp {
 
 struct DeviceProps {
     is_enabled: bool,
-    last_battery_readout: ReadoutState,
+    battery_state: BatteryState,
     multiplier: f32,
     min: f32,
     max: f32,
 }
 
-enum ReadoutState {
-    Uninit,
-    Init(BatteryReadout),
-    Error,
-}
+// TEMP: if readout returned an error, SharedF32 will be set to NaN
+struct BatteryState(SharedF32, tokio::task::JoinHandle<()>);
 
-struct BatteryReadout(f64, Instant);
-
-impl BatteryReadout {
-    pub fn now(bat: f64) -> Self {
-        Self(bat, Instant::now())
+impl BatteryState {
+    pub fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>) -> Self {
+        let shared_level = SharedF32::new(0.0);
+        let task = {
+            let shared_level = shared_level.clone();
+            runtime.spawn(battery_check_bg_task(device, shared_level))
+        };
+        Self(shared_level, task)
     }
 
-    pub fn is_older_than(&self, dur: Duration) -> bool {
-        self.1.elapsed() > dur
+    pub fn get_level(&self) -> Option<f32> {
+        let value = self.0.load();
+        if value.is_nan() {
+            None
+        } else {
+            Some(value)
+        }
     }
 }
 
-impl Default for DeviceProps {
-    fn default() -> Self {
+async fn battery_check_bg_task(
+    device: Arc<ButtplugClientDevice>,
+    shared_level: SharedF32,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    loop {
+        interval.tick().await;
+        match device.battery_level().await {
+            Ok(level) => shared_level.store(level as f32),
+            Err(_) => {
+                shared_level.store(f32::NAN);
+                break;
+            }
+        }
+    }
+}
+
+impl DeviceProps {
+    fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>) -> Self {
         Self {
             is_enabled: false,
-            last_battery_readout: ReadoutState::Uninit,
+            battery_state: BatteryState::new(runtime, device),
             multiplier: 1.0,
             min: 0.0,
             max: 1.0,
@@ -222,7 +243,9 @@ impl eframe::App for GuiApp {
                 }
             });
             ui.separator();
-            let sound_power = self.current_sound_power.load();
+            let main_mul = self.settings.main_volume.powi(2);
+            let sound_power =
+                (self.current_sound_power.load() * main_mul).clamp(0.0, 1.0);
             ui.horizontal(|ui| {
                 ui.label(format!(
                     "Current volume: {:.2}%",
@@ -232,6 +255,14 @@ impl eframe::App for GuiApp {
             });
 
             ui.horizontal(|ui| {
+                ui.label("Main volume: ");
+                let mut volume_as_percent = self.settings.main_volume * 100.0;
+                ui.add(
+                    Slider::new(&mut volume_as_percent, 0.0..=500.0)
+                        .suffix("%"),
+                );
+                self.settings.main_volume = volume_as_percent / 100.0;
+
                 let mut low_pass_freq = self.settings.low_pass_freq.load();
                 ui.label("Low pass freq.: ");
                 ui.add(
@@ -245,7 +276,10 @@ impl eframe::App for GuiApp {
 
             ui.heading("Devices");
             for device in self.client.devices() {
-                let props = self.devices.entry(device.index()).or_default();
+                let props =
+                    self.devices.entry(device.index()).or_insert_with(|| {
+                        DeviceProps::new(&self.runtime, device.clone())
+                    });
                 device_widget(ui, device, props, sound_power, &self.runtime);
             }
         });
@@ -274,22 +308,8 @@ fn device_widget(
             ui.label(&device.name);
         }
 
-        let state = &mut props.last_battery_readout;
-        let bat: Option<f64> = match state {
-            ReadoutState::Uninit => {
-                update_battery_readout(runtime, &device, state)
-            }
-            ReadoutState::Init(readout) => {
-                if readout.is_older_than(Duration::from_secs(5)) {
-                    update_battery_readout(runtime, &device, state)
-                } else {
-                    Some(readout.0)
-                }
-            }
-            ReadoutState::Error => None,
-        };
-        if let Some(bat) = bat {
-            ui.label(format!("Battery: {}", bat));
+        if let Some(bat) = props.battery_state.get_level() {
+            ui.label(format!("Battery: {}%", bat * 100.0));
         }
 
         let (speed, cutoff) = props.calculate_visual_output(sound_power);
@@ -323,19 +343,4 @@ fn device_widget(
             runtime.spawn(device.vibrate(VibrateCommand::Speed(speed)));
         }
     });
-}
-
-// TEMP: currently, getting error from battery_level will mark it
-// as unusable, even if error was spurious
-fn update_battery_readout(
-    runtime: &Runtime,
-    device: &Arc<ButtplugClientDevice>,
-    state: &mut ReadoutState,
-) -> Option<f64> {
-    let ret;
-    (*state, ret) = match runtime.block_on(device.battery_level()) {
-        Ok(bat) => (ReadoutState::Init(BatteryReadout::now(bat)), Some(bat)),
-        Err(_) => (ReadoutState::Error, None),
-    };
-    ret
 }
