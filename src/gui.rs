@@ -10,9 +10,10 @@ use buttplug::client::{ButtplugClient, ButtplugClientDevice, VibrateCommand};
 use clap::Parser;
 use eframe::{
     egui::{
-        self, Button, Color32, ProgressBar, RichText, Slider, Ui, Visuals,
-        Window,
+        self, Button, Color32, ProgressBar, RichText, Slider, TextFormat, Ui,
+        Visuals, Window,
     },
+    epaint::text::LayoutJob,
     CreationContext, Storage,
 };
 use tokio::runtime::Runtime;
@@ -255,20 +256,48 @@ impl eframe::App for GuiApp {
             });
 
             ui.horizontal(|ui| {
-                ui.label("Main volume: ");
+                let r1 = ui.label("Main volume: ");
                 let mut volume_as_percent = self.settings.main_volume * 100.0;
-                ui.add(
+                let r2 = ui.add(
                     Slider::new(&mut volume_as_percent, 0.0..=500.0)
                         .suffix("%"),
                 );
                 self.settings.main_volume = volume_as_percent / 100.0;
+                let mut text = LayoutJob::default();
+                text.append(
+                    "Controls global volume level\n",
+                    0.0,
+                    TextFormat::default(),
+                );
+                text.append(
+                    "Warning!!!",
+                    0.0,
+                    TextFormat {
+                        color: Color32::RED,
+                        ..Default::default()
+                    },
+                );
+                text.append(
+                    " Be careful, it's exponential so 200% is 4 times stronger!",
+                    0.0,
+                    TextFormat::default(),
+                );
+                r1.union(r2).on_hover_text_at_pointer(
+                    text, // "Controls global volume level\n\
+                         // Warning!!! It's exponential, so 200% is 4 times stronger",
+                );
 
                 let mut low_pass_freq = self.settings.low_pass_freq.load();
-                ui.label("Low pass freq.: ");
-                ui.add(
+                let r1 = ui.label("Low pass freq.: ");
+                let r2 = ui.add(
                     Slider::new(&mut low_pass_freq, 0.0..=20_000.0)
                         .logarithmic(true)
                         .integer(),
+                );
+                r1.union(r2).on_hover_text_at_pointer(
+                    "Filters out frequencies above this one,\n\
+                    leaving only lower frequencies.\n\
+                    Defaults to max (20_000 Hz)",
                 );
                 self.settings.low_pass_freq.store(low_pass_freq);
             });
