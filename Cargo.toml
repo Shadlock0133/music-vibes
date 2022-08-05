@@ -1,6 +1,6 @@
 [package]
 name = "music-vibes"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 
@@ -8,9 +8,9 @@ license = "MIT"
 
 [dependencies]
 buttplug = "5.1.10"
-flume = "0.10.12"
-clap = { version = "3.1.18", features = ["derive"] }
-audio-capture = { git = "https://github.com/Shadlock0133/audio-capture", rev = "76fd6e9" }
+flume = "0.10.14"
+clap = { version = "3.2.16", features = ["derive"] }
+audio-capture = { git = "https://github.com/Shadlock0133/audio-capture", rev = "26e326cffcf00cdc564a2b840c6421e021e0c27f" }
 parking_lot = "0.12.1"
 eframe = { version = "0.18.0", features = ["persistence"] }
-tokio = "1.19.2"
+tokio = "1.20.1"

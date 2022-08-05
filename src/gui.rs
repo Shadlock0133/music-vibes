@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use audio_capture::win::capture::AudioCapture;
@@ -52,15 +52,35 @@ struct GuiApp {
 
 struct DeviceProps {
     is_enabled: bool,
+    last_battery_readout: ReadoutState,
     multiplier: f32,
     min: f32,
     max: f32,
+}
+
+enum ReadoutState {
+    Uninit,
+    Init(BatteryReadout),
+    Error,
+}
+
+struct BatteryReadout(f64, Instant);
+
+impl BatteryReadout {
+    pub fn now(bat: f64) -> Self {
+        Self(bat, Instant::now())
+    }
+
+    pub fn is_older_than(&self, dur: Duration) -> bool {
+        self.1.elapsed() > dur
+    }
 }
 
 impl Default for DeviceProps {
     fn default() -> Self {
         Self {
             is_enabled: false,
+            last_battery_readout: ReadoutState::Uninit,
             multiplier: 1.0,
             min: 0.0,
             max: 1.0,
@@ -253,9 +273,25 @@ fn device_widget(
         } else {
             ui.label(&device.name);
         }
-        if let Ok(bat) = runtime.block_on(device.battery_level()) {
+
+        let state = &mut props.last_battery_readout;
+        let bat: Option<f64> = match state {
+            ReadoutState::Uninit => {
+                update_battery_readout(runtime, &device, state)
+            }
+            ReadoutState::Init(readout) => {
+                if readout.is_older_than(Duration::from_secs(5)) {
+                    update_battery_readout(runtime, &device, state)
+                } else {
+                    Some(readout.0)
+                }
+            }
+            ReadoutState::Error => None,
+        };
+        if let Some(bat) = bat {
             ui.label(format!("Battery: {}", bat));
         }
+
         let (speed, cutoff) = props.calculate_visual_output(sound_power);
 
         ui.horizontal(|ui| {
@@ -287,4 +323,19 @@ fn device_widget(
             runtime.spawn(device.vibrate(VibrateCommand::Speed(speed)));
         }
     });
+}
+
+// TEMP: currently, getting error from battery_level will mark it
+// as unusable, even if error was spurious
+fn update_battery_readout(
+    runtime: &Runtime,
+    device: &Arc<ButtplugClientDevice>,
+    state: &mut ReadoutState,
+) -> Option<f64> {
+    let ret;
+    (*state, ret) = match runtime.block_on(device.battery_level()) {
+        Ok(bat) => (ReadoutState::Init(BatteryReadout::now(bat)), Some(bat)),
+        Err(_) => (ReadoutState::Error, None),
+    };
+    ret
 }
