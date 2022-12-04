@@ -8,11 +8,14 @@ use std::{
 
 use buttplug::{
     client::{ButtplugClient, ButtplugClientError},
-    connector::{
-        ButtplugRemoteClientConnector as RemoteConn,
-        ButtplugWebsocketClientTransport as WebsocketTransport,
+    core::{
+        connector::{
+            ButtplugRemoteClientConnector as RemoteConn,
+            ButtplugWebsocketClientTransport as WebsocketTransport,
+        },
+        message::serializer::ButtplugClientJSONSerializer as JsonSer,
     },
-    core::messages::serializer::ButtplugClientJSONSerializer as JsonSer,
+    util::in_process_client,
 };
 
 pub async fn start_bp_server(
@@ -22,12 +25,13 @@ pub async fn start_bp_server(
     let remote_connector = RemoteConn::<_, JsonSer>::new(
         WebsocketTransport::new_insecure_connector(addr),
     );
-    let client = ButtplugClient::new("music-vibes");
+    let name = "music-vibes";
+    let mut client = ButtplugClient::new(name);
     // Fallback to in-process server
     if let Err(e) = client.connect(remote_connector).await {
         eprintln!("Couldn't connect to external server: {}", e);
         eprintln!("Launching in-process server");
-        client.connect_in_process(None).await?;
+        client = in_process_client(name, false).await;
     }
 
     let server_name = client.server_name();

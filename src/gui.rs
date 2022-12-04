@@ -330,11 +330,12 @@ fn device_widget(
     sound_power: f32,
     runtime: &Runtime,
 ) {
+    // TODO: Add per-vibrator settings
     ui.group(|ui| {
         if cfg!(debug_assertions) {
-            ui.label(format!("({}) {}", device.index(), device.name));
+            ui.label(format!("({}) {}", device.index(), device.name()));
         } else {
-            ui.label(&device.name);
+            ui.label(device.name());
         }
 
         if let Some(bat) = props.battery_state.get_level() {
@@ -369,7 +370,7 @@ fn device_widget(
         });
         if props.is_enabled {
             let speed = props.calculate_output(sound_power) as f64;
-            runtime.spawn(device.vibrate(VibrateCommand::Speed(speed)));
+            runtime.spawn(device.vibrate(&VibrateCommand::Speed(speed)));
         }
     });
 }
