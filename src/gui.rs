@@ -1,12 +1,16 @@
 use std::{
     collections::{HashMap, VecDeque},
+    iter::from_fn,
     sync::Arc,
     thread::JoinHandle,
     time::Duration,
 };
 
 use audio_capture::win::capture::AudioCapture;
-use buttplug::client::{ButtplugClient, ButtplugClientDevice, VibrateCommand};
+use buttplug::{
+    client::{ButtplugClient, ButtplugClientDevice, VibrateCommand},
+    core::message::ActuatorType,
+};
 use clap::Parser;
 use eframe::{
     egui::{
@@ -56,6 +60,8 @@ struct DeviceProps {
     multiplier: f32,
     min: f32,
     max: f32,
+    show_vibrators: bool,
+    vibrators: Vec<VibratorProps>,
 }
 
 // TEMP: if readout returned an error, SharedF32 will be set to NaN
@@ -100,12 +106,27 @@ async fn battery_check_bg_task(
 
 impl DeviceProps {
     fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>) -> Self {
+        let vibe_count = device
+            .message_attributes()
+            .scalar_cmd()
+            .as_ref()
+            .map(|x| {
+                x.iter()
+                    .filter(|x| x.actuator_type() == &ActuatorType::Vibrate)
+                    .count()
+            })
+            .unwrap_or_default();
+        let vibrators = from_fn(|| Some(VibratorProps::default()))
+            .take(vibe_count)
+            .collect();
         Self {
             is_enabled: false,
             battery_state: BatteryState::new(runtime, device),
             multiplier: 1.0,
             min: 0.0,
             max: 1.0,
+            show_vibrators: false,
+            vibrators,
         }
     }
 }
@@ -323,6 +344,24 @@ impl eframe::App for GuiApp {
     }
 }
 
+struct VibratorProps {
+    is_enabled: bool,
+    multiplier: f32,
+    min: f32,
+    max: f32,
+}
+
+impl Default for VibratorProps {
+    fn default() -> Self {
+        Self {
+            is_enabled: true,
+            multiplier: 1.0,
+            min: 0.0,
+            max: 1.0,
+        }
+    }
+}
+
 fn device_widget(
     ui: &mut Ui,
     device: Arc<ButtplugClientDevice>,
@@ -368,9 +407,52 @@ fn device_widget(
             ui.label("Maximum: ");
             ui.add(Slider::new(&mut props.max, 0.0..=1.0));
         });
+        ui.toggle_value(&mut props.show_vibrators, "Vibrators");
+        if props.show_vibrators {
+            ui.group(|ui| {
+                for (i, vibe) in props.vibrators.iter_mut().enumerate() {
+                    vibrator_widget(ui, i, vibe);
+                }
+            });
+        }
         if props.is_enabled {
-            let speed = props.calculate_output(sound_power) as f64;
-            runtime.spawn(device.vibrate(&VibrateCommand::Speed(speed)));
+            let speed = props.calculate_output(sound_power);
+            let speed_cmd = VibrateCommand::SpeedVec(
+                props
+                    .vibrators
+                    .iter()
+                    .map(|v| {
+                        if v.is_enabled {
+                            (speed * v.multiplier)
+                                .clamp(0.0, v.max)
+                                .min_cutoff(v.min)
+                                as f64
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect(),
+            );
+            runtime.spawn(device.vibrate(&speed_cmd));
+        }
+    });
+}
+
+fn vibrator_widget(ui: &mut Ui, index: usize, vibe: &mut VibratorProps) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!("Vibe {index}: "));
+        if ui.selectable_label(vibe.is_enabled, "Enable").clicked() {
+            vibe.is_enabled = !vibe.is_enabled;
+        }
+        ui.label("Multiplier: ");
+        ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
+        ui.label("Minimum (cut-off): ");
+        ui.add(Slider::new(&mut vibe.min, 0.0..=1.0));
+        ui.label("Maximum: ");
+        ui.add(Slider::new(&mut vibe.max, 0.0..=1.0));
+
+        if ui.button("Reset").clicked() {
+            *vibe = VibratorProps::default();
         }
     });
 }
