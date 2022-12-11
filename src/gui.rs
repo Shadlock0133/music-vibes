@@ -14,8 +14,8 @@ use buttplug::{
 use clap::Parser;
 use eframe::{
     egui::{
-        self, Button, Color32, ProgressBar, RichText, Slider, TextFormat, Ui,
-        Visuals, Window,
+        self, Button, Color32, ProgressBar, RichText, SelectableLabel, Slider,
+        TextFormat, Ui, Visuals, Window,
     },
     epaint::text::LayoutJob,
     CreationContext, Storage,
@@ -60,7 +60,6 @@ struct DeviceProps {
     multiplier: f32,
     min: f32,
     max: f32,
-    show_vibrators: bool,
     vibrators: Vec<VibratorProps>,
 }
 
@@ -125,7 +124,6 @@ impl DeviceProps {
             multiplier: 1.0,
             min: 0.0,
             max: 1.0,
-            show_vibrators: false,
             vibrators,
         }
     }
@@ -202,13 +200,18 @@ impl GuiApp {
             capture_thread(current_sound_power2, low_pass_freq)
         });
 
+        let is_scanning = settings.start_scanning_on_startup;
+        if is_scanning {
+            runtime.spawn(client.start_scanning());
+        }
+
         GuiApp {
             runtime,
             client,
             devices,
             current_sound_power,
             _capture_thread,
-            is_scanning: false,
+            is_scanning,
             show_settings: false,
             settings,
         }
@@ -333,15 +336,31 @@ impl eframe::App for GuiApp {
                 device_widget(ui, device, props, sound_power, &self.runtime);
             }
         });
-        Window::new("Settings")
-            .open(&mut self.show_settings)
-            .resizable(false)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                ui.checkbox(&mut self.settings.use_dark_mode, "Use dark mode");
-            });
+        settings_window_widget(
+            ctx,
+            &mut self.show_settings,
+            &mut self.settings,
+        );
         ctx.request_repaint();
     }
+}
+
+fn settings_window_widget(
+    ctx: &egui::Context,
+    show_settings: &mut bool,
+    settings: &mut Settings,
+) {
+    Window::new("Settings")
+        .open(show_settings)
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.checkbox(&mut settings.use_dark_mode, "Use dark mode");
+            ui.checkbox(
+                &mut settings.start_scanning_on_startup,
+                "Start scanning on startup",
+            );
+        });
 }
 
 struct VibratorProps {
@@ -369,7 +388,6 @@ fn device_widget(
     sound_power: f32,
     runtime: &Runtime,
 ) {
-    // TODO: Add per-vibrator settings
     ui.group(|ui| {
         if cfg!(debug_assertions) {
             ui.label(format!("({}) {}", device.index(), device.name()));
@@ -384,66 +402,80 @@ fn device_widget(
         let (speed, cutoff) = props.calculate_visual_output(sound_power);
 
         ui.horizontal(|ui| {
-            ui.label(format!("{:.2}%", speed * 100.0));
-            if cutoff {
-                ui.visuals_mut().selection.bg_fill = Color32::RED;
-            }
-            if !props.is_enabled {
-                ui.visuals_mut().selection.bg_fill = Color32::GRAY;
-            }
-            ui.add(ProgressBar::new(speed));
-        });
-        ui.horizontal_wrapped(|ui| {
-            if ui.selectable_label(props.is_enabled, "Enable").clicked() {
-                props.is_enabled = !props.is_enabled;
-                if !props.is_enabled {
-                    runtime.spawn(device.stop());
-                }
-            }
-            ui.label("Multiplier: ");
-            ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
-            ui.label("Minimum (cut-off): ");
-            ui.add(Slider::new(&mut props.min, 0.0..=1.0));
-            ui.label("Maximum: ");
-            ui.add(Slider::new(&mut props.max, 0.0..=1.0));
-        });
-        ui.toggle_value(&mut props.show_vibrators, "Vibrators");
-        if props.show_vibrators {
+            let label = if props.is_enabled {
+                "Enabled"
+            } else {
+                "Enable"
+            };
+            let enable_button = SelectableLabel::new(props.is_enabled, label);
             ui.group(|ui| {
-                for (i, vibe) in props.vibrators.iter_mut().enumerate() {
-                    vibrator_widget(ui, i, vibe);
+                if ui.add_sized([60.0, 60.0], enable_button).clicked() {
+                    props.is_enabled = !props.is_enabled;
+                    if !props.is_enabled {
+                        runtime.spawn(device.stop());
+                    }
                 }
             });
-        }
-        if props.is_enabled {
-            let speed = props.calculate_output(sound_power);
-            let speed_cmd = VibrateCommand::SpeedVec(
-                props
-                    .vibrators
-                    .iter()
-                    .map(|v| {
-                        if v.is_enabled {
-                            (speed * v.multiplier)
-                                .clamp(0.0, v.max)
-                                .min_cutoff(v.min)
-                                as f64
-                        } else {
-                            0.0
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{:.2}%", speed * 100.0));
+                    if cutoff {
+                        ui.visuals_mut().selection.bg_fill = Color32::RED;
+                    }
+                    if !props.is_enabled {
+                        ui.visuals_mut().selection.bg_fill = Color32::GRAY;
+                    }
+                    ui.add(ProgressBar::new(speed));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Multiplier: ");
+                    ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
+                    ui.label("Minimum (cut-off): ");
+                    ui.add(Slider::new(&mut props.min, 0.0..=1.0));
+                    ui.label("Maximum: ");
+                    ui.add(Slider::new(&mut props.max, 0.0..=1.0));
+                });
+                ui.collapsing("Vibrators", |ui| {
+                    ui.group(|ui| {
+                        for (i, vibe) in props.vibrators.iter_mut().enumerate()
+                        {
+                            vibrator_widget(ui, i, vibe);
                         }
-                    })
-                    .collect(),
-            );
-            runtime.spawn(device.vibrate(&speed_cmd));
-        }
+                    });
+                });
+                if props.is_enabled {
+                    let speed = props.calculate_output(sound_power);
+                    let speed_cmd = VibrateCommand::SpeedVec(
+                        props
+                            .vibrators
+                            .iter()
+                            .map(|v| {
+                                if v.is_enabled {
+                                    (speed * v.multiplier)
+                                        .clamp(0.0, v.max)
+                                        .min_cutoff(v.min)
+                                        as f64
+                                } else {
+                                    0.0
+                                }
+                            })
+                            .collect(),
+                    );
+                    runtime.spawn(device.vibrate(&speed_cmd));
+                }
+            })
+        })
     });
 }
 
 fn vibrator_widget(ui: &mut Ui, index: usize, vibe: &mut VibratorProps) {
     ui.horizontal_wrapped(|ui| {
         ui.label(format!("Vibe {index}: "));
-        if ui.selectable_label(vibe.is_enabled, "Enable").clicked() {
+        let label = if vibe.is_enabled { "Enabled" } else { "Enable" };
+        if ui.selectable_label(vibe.is_enabled, label).clicked() {
             vibe.is_enabled = !vibe.is_enabled;
         }
+
         ui.label("Multiplier: ");
         ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
         ui.label("Minimum (cut-off): ");
