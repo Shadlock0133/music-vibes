@@ -32,3 +32,9 @@ Created mostly to play around with qdot's excellent `buttplug` and my own
 
 Current implementation of cutoff filter is "sharp", that is, it will jump from
 zero to above set `min` value, with no smoothing, so be careful with that.
+
+## Start Up Behavior
+
+When the application starts music-vibes will try to connect to buttplug server such as intiface on localhost. If the connection has a timeout it falls back to creating it's own server. 
+
+You can also specify a different address using the command flag `--server-addr` or `-s`
