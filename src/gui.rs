@@ -26,7 +26,7 @@ use eframe::{
 use tokio::runtime::Runtime;
 
 use crate::{
-    settings::{defaults, Settings},
+    settings::{defaults, Settings, DeviceSettings, VibratorSettings},
     util::{self, MinCutoff, SharedF32},
 };
 
@@ -48,7 +48,7 @@ pub fn gui(args: Gui) {
 struct GuiApp {
     runtime: tokio::runtime::Runtime,
     client: ButtplugClient,
-    devices: HashMap<u32, DeviceProps>,
+    devices: HashMap<String, DeviceProps>,
     current_sound_power: SharedF32,
     _capture_thread: JoinHandle<()>,
     is_scanning: bool,
@@ -107,7 +107,7 @@ async fn battery_check_bg_task(
 }
 
 impl DeviceProps {
-    fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>) -> Self {
+    fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>, settings: &Settings) -> Self {
         let vibe_count = device
             .message_attributes()
             .scalar_cmd()
@@ -118,15 +118,40 @@ impl DeviceProps {
                     .count()
             })
             .unwrap_or_default();
-        let vibrators = from_fn(|| Some(VibratorProps::default()))
-            .take(vibe_count)
-            .collect();
+        let device_settings = settings.device_settings.get(device.name().as_str());
+        let (is_enabled, multiplier, min, max, vibrators) = if let Some(ds) = device_settings {
+            let mut vib_props = Vec::new();
+            for vs in &ds.vibrators {
+                vib_props.push(VibratorProps {
+                    is_enabled: vs.is_enabled,
+                    multiplier: vs.multiplier,
+                    min: vs.min,
+                    max: vs.max,
+                });
+            }
+            // If the number of vibrators in settings doesn't match the device, fill with defaults
+            while vib_props.len() < vibe_count {
+                vib_props.push(VibratorProps::default());
+            }
+            (
+                ds.is_enabled,
+                ds.multiplier,
+                ds.min,
+                ds.max,
+                vib_props,
+            )
+        } else {
+            let vibrators = from_fn(|| Some(VibratorProps::default()))
+                .take(vibe_count)
+                .collect();
+            (false, 1.0, 0.0, 1.0, vibrators)
+        };
         Self {
-            is_enabled: false,
+            is_enabled,
             battery_state: BatteryState::new(runtime, device),
-            multiplier: 1.0,
-            min: 0.0,
-            max: 1.0,
+            multiplier,
+            min,
+            max,
             vibrators,
         }
     }
@@ -244,6 +269,26 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn save(&mut self, storage: &mut dyn Storage) {
+        // Update device settings before saving
+        for (device_name, props) in &self.devices {
+            let mut vibrators = Vec::new();
+            for vibe in &props.vibrators {
+                vibrators.push(VibratorSettings {
+                    is_enabled: vibe.is_enabled,
+                    multiplier: vibe.multiplier,
+                    min: vibe.min,
+                    max: vibe.max,
+                });
+            }
+            let device_settings = DeviceSettings {
+                is_enabled: props.is_enabled,
+                multiplier: props.multiplier,
+                min: props.min,
+                max: props.max,
+                vibrators,
+            };
+            self.settings.device_settings.insert(device_name.clone(), device_settings);
+        }
         self.settings.save(storage);
         storage.flush();
     }
@@ -389,8 +434,8 @@ impl eframe::App for GuiApp {
             ui.heading("Devices");
             for device in self.client.devices() {
                 let props =
-                    self.devices.entry(device.index()).or_insert_with(|| {
-                        DeviceProps::new(&self.runtime, device.clone())
+                    self.devices.entry(device.name().to_string()).or_insert_with(|| {
+                        DeviceProps::new(&self.runtime, device.clone(), &self.settings)
                     });
                 device_widget(ui, device, props, sound_power, &self.runtime);
             }
@@ -508,12 +553,14 @@ fn device_widget(
                         props.max = 1.0; // Default DeviceProps max
                     }
                 });
-                ui.collapsing("Vibrators", |ui| {
-                    ui.group(|ui| {
-                        for (i, vibe) in props.vibrators.iter_mut().enumerate()
-                        {
-                            vibrator_widget(ui, i, vibe);
-                        }
+                ui.push_id(format!("vibrators_{}", device.name()), |ui| {
+                    ui.collapsing("Vibrators", |ui| {
+                        ui.group(|ui| {
+                            for (i, vibe) in props.vibrators.iter_mut().enumerate()
+                            {
+                                vibrator_widget(ui, i, vibe);
+                            }
+                        });
                     });
                 });
                 if props.is_enabled {

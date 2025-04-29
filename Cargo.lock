@@ -1931,6 +1931,7 @@ dependencies = [
  "eframe",
  "flume",
  "parking_lot",
+ "serde",
  "tokio",
 ]
 

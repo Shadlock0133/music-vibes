@@ -2,12 +2,29 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::collections::HashMap;
 
 use eframe::{get_value, set_value, Storage};
 
 use crate::util::SharedF32;
 
-// TODO: Add derive macro
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VibratorSettings {
+    pub is_enabled: bool,
+    pub multiplier: f32,
+    pub min: f32,
+    pub max: f32,
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DeviceSettings {
+    pub is_enabled: bool,
+    pub multiplier: f32,
+    pub min: f32,
+    pub max: f32,
+    pub vibrators: Vec<VibratorSettings>,
+}
+
 pub struct Settings {
     pub main_volume: f32,
     pub low_pass_freq: SharedF32,
@@ -15,6 +32,7 @@ pub struct Settings {
     pub start_scanning_on_startup: bool,
     pub polling_rate_ms: SharedF32,
     pub use_custom_polling_rate: Arc<AtomicBool>,
+    pub device_settings: HashMap<String, DeviceSettings>,
 }
 
 impl Default for Settings {
@@ -28,6 +46,7 @@ impl Default for Settings {
             use_custom_polling_rate: Arc::new(AtomicBool::new(
                 defaults::USE_CUSTOM_POLLING_RATE,
             )),
+            device_settings: HashMap::new(),
         }
     }
 }
@@ -39,6 +58,7 @@ mod names {
     pub const START_SCANNING_ON_STARTUP: &str = "start_scanning_on_startup";
     pub const POLLING_RATE_MS: &str = "polling_rate_ms";
     pub const USE_CUSTOM_POLLING_RATE: &str = "use_custom_polling_rate";
+    pub const DEVICE_SETTINGS: &str = "device_settings";
 }
 pub mod defaults {
     pub const MAIN_VOLUME: f32 = 1.0;
@@ -65,6 +85,8 @@ impl Settings {
         let use_custom_polling_rate =
             get_value(storage, names::USE_CUSTOM_POLLING_RATE)
                 .unwrap_or(defaults::USE_CUSTOM_POLLING_RATE);
+        let device_settings: HashMap<String, DeviceSettings> =
+            get_value(storage, names::DEVICE_SETTINGS).unwrap_or_default();
         Self {
             main_volume,
             low_pass_freq: SharedF32::new(low_pass_freq),
@@ -74,6 +96,7 @@ impl Settings {
             use_custom_polling_rate: Arc::new(AtomicBool::new(
                 use_custom_polling_rate,
             )),
+            device_settings,
         }
     }
 
@@ -92,5 +115,6 @@ impl Settings {
             names::USE_CUSTOM_POLLING_RATE,
             &self.use_custom_polling_rate.load(Ordering::Relaxed),
         );
+        set_value(storage, names::DEVICE_SETTINGS, &self.device_settings);
     }
 }
