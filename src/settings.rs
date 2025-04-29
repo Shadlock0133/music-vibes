@@ -40,7 +40,7 @@ mod names {
     pub const POLLING_RATE_MS: &str = "polling_rate_ms";
     pub const USE_CUSTOM_POLLING_RATE: &str = "use_custom_polling_rate";
 }
-mod defaults {
+pub mod defaults {
     pub const MAIN_VOLUME: f32 = 1.0;
     pub const LOW_PASS_FREQ: f32 = 20_000.0;
     pub const DARK_MODE: bool = true;

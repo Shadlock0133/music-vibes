@@ -26,7 +26,7 @@ use eframe::{
 use tokio::runtime::Runtime;
 
 use crate::{
-    settings::Settings,
+    settings::{defaults, Settings},
     util::{self, MinCutoff, SharedF32},
 };
 
@@ -307,12 +307,16 @@ impl eframe::App for GuiApp {
                 // Main Volume Slider
                 let r1 = ui.label("Main volume: ");
                 let mut volume_as_percent = self.settings.main_volume * 100.0;
-                let r2 = ui.add(
+                let slider_response = ui.add(
                     Slider::new(&mut volume_as_percent, 0.0..=500.0)
                         .suffix("%"),
                 );
-                if r2.changed() {
+                if slider_response.changed() {
                     self.settings.main_volume = volume_as_percent / 100.0;
+                }
+                if slider_response.double_clicked() {
+                    // Reset on double click
+                    self.settings.main_volume = defaults::MAIN_VOLUME;
                 }
                 let mut text = LayoutJob::default();
                 text.append(
@@ -333,20 +337,26 @@ impl eframe::App for GuiApp {
                     0.0,
                     TextFormat::default(),
                 );
-                r1.union(r2).on_hover_text_at_pointer(text);
+                r1.union(slider_response).on_hover_text_at_pointer(text);
 
                 // Low Pass Freq Slider
                 let mut low_pass_freq = self.settings.low_pass_freq.load();
                 let r1 = ui.label("Low pass freq.: ");
-                let r2 = ui.add(
+                let slider_response = ui.add(
                     Slider::new(&mut low_pass_freq, 0.0..=20_000.0)
                         .logarithmic(true)
                         .integer(),
                 );
-                if r2.changed() {
+                if slider_response.changed() {
                     self.settings.low_pass_freq.store(low_pass_freq);
                 }
-                r1.union(r2).on_hover_text_at_pointer(
+                if slider_response.double_clicked() {
+                    // Reset on double click
+                    self.settings
+                        .low_pass_freq
+                        .store(defaults::LOW_PASS_FREQ);
+                }
+                r1.union(slider_response).on_hover_text_at_pointer(
                     "Filters out frequencies above this one,\n\
                     leaving only lower frequencies.\n\
                     Defaults to max (20_000 Hz)",
@@ -358,11 +368,17 @@ impl eframe::App for GuiApp {
                     let r1 = ui.label("Polling Rate (ms): ");
                     let mut polling_rate = self.settings.polling_rate_ms.load();
                     let slider = Slider::new(&mut polling_rate, 1.0..=500.0).integer();
-                    let r2 = ui.add(slider); // Use ui.add since it's only shown when enabled
-                    if r2.changed() {
+                    let slider_response = ui.add(slider); // Use ui.add since it's only shown when enabled
+                    if slider_response.changed() {
                         self.settings.polling_rate_ms.store(polling_rate);
                     }
-                    r1.union(r2).on_hover_text_at_pointer(
+                    if slider_response.double_clicked() {
+                        // Reset on double click
+                        self.settings
+                            .polling_rate_ms
+                            .store(defaults::POLLING_RATE_MS);
+                    }
+                    r1.union(slider_response).on_hover_text_at_pointer(
                         "Controls how often audio is analyzed (in milliseconds).\n\
                         Only use this setting if your device is lagging.",
                     );
@@ -477,11 +493,20 @@ fn device_widget(
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Multiplier: ");
-                    ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
+                    let slider_response = ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
+                    if slider_response.double_clicked() {
+                        props.multiplier = 1.0; // Default DeviceProps multiplier
+                    }
                     ui.label("Minimum (cut-off): ");
-                    ui.add(Slider::new(&mut props.min, 0.0..=1.0));
+                    let slider_response = ui.add(Slider::new(&mut props.min, 0.0..=1.0));
+                     if slider_response.double_clicked() {
+                        props.min = 0.0; // Default DeviceProps min
+                    }
                     ui.label("Maximum: ");
-                    ui.add(Slider::new(&mut props.max, 0.0..=1.0));
+                    let slider_response = ui.add(Slider::new(&mut props.max, 0.0..=1.0));
+                     if slider_response.double_clicked() {
+                        props.max = 1.0; // Default DeviceProps max
+                    }
                 });
                 ui.collapsing("Vibrators", |ui| {
                     ui.group(|ui| {
@@ -525,11 +550,20 @@ fn vibrator_widget(ui: &mut Ui, index: usize, vibe: &mut VibratorProps) {
         }
 
         ui.label("Multiplier: ");
-        ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
+        let slider_response = ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
+        if slider_response.double_clicked() {
+            vibe.multiplier = 1.0; // Default VibratorProps multiplier
+        }
         ui.label("Minimum (cut-off): ");
-        ui.add(Slider::new(&mut vibe.min, 0.0..=1.0));
+        let slider_response = ui.add(Slider::new(&mut vibe.min, 0.0..=1.0));
+        if slider_response.double_clicked() {
+            vibe.min = 0.0; // Default VibratorProps min
+        }
         ui.label("Maximum: ");
-        ui.add(Slider::new(&mut vibe.max, 0.0..=1.0));
+        let slider_response = ui.add(Slider::new(&mut vibe.max, 0.0..=1.0));
+        if slider_response.double_clicked() {
+            vibe.max = 1.0; // Default VibratorProps max
+        }
 
         if ui.button("Reset").clicked() {
             *vibe = VibratorProps::default();
