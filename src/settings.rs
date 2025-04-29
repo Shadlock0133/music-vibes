@@ -1,3 +1,8 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
 use eframe::{get_value, set_value, Storage};
 
 use crate::util::SharedF32;
@@ -8,6 +13,8 @@ pub struct Settings {
     pub low_pass_freq: SharedF32,
     pub use_dark_mode: bool,
     pub start_scanning_on_startup: bool,
+    pub polling_rate_ms: SharedF32,
+    pub use_custom_polling_rate: Arc<AtomicBool>,
 }
 
 impl Default for Settings {
@@ -17,6 +24,10 @@ impl Default for Settings {
             low_pass_freq: SharedF32::new(defaults::LOW_PASS_FREQ),
             use_dark_mode: defaults::DARK_MODE,
             start_scanning_on_startup: defaults::START_SCANNING_ON_STARTUP,
+            polling_rate_ms: SharedF32::new(defaults::POLLING_RATE_MS),
+            use_custom_polling_rate: Arc::new(AtomicBool::new(
+                defaults::USE_CUSTOM_POLLING_RATE,
+            )),
         }
     }
 }
@@ -26,12 +37,16 @@ mod names {
     pub const LOW_PASS_FREQ: &str = "low_pass_freq";
     pub const DARK_MODE: &str = "dark_mode";
     pub const START_SCANNING_ON_STARTUP: &str = "start_scanning_on_startup";
+    pub const POLLING_RATE_MS: &str = "polling_rate_ms";
+    pub const USE_CUSTOM_POLLING_RATE: &str = "use_custom_polling_rate";
 }
 mod defaults {
     pub const MAIN_VOLUME: f32 = 1.0;
     pub const LOW_PASS_FREQ: f32 = 20_000.0;
     pub const DARK_MODE: bool = true;
     pub const START_SCANNING_ON_STARTUP: bool = false;
+    pub const POLLING_RATE_MS: f32 = 20.0;
+    pub const USE_CUSTOM_POLLING_RATE: bool = false;
 }
 
 impl Settings {
@@ -45,11 +60,20 @@ impl Settings {
         let start_scanning_on_startup =
             get_value(storage, names::START_SCANNING_ON_STARTUP)
                 .unwrap_or(defaults::START_SCANNING_ON_STARTUP);
+        let polling_rate_ms = get_value(storage, names::POLLING_RATE_MS)
+            .unwrap_or(defaults::POLLING_RATE_MS);
+        let use_custom_polling_rate =
+            get_value(storage, names::USE_CUSTOM_POLLING_RATE)
+                .unwrap_or(defaults::USE_CUSTOM_POLLING_RATE);
         Self {
             main_volume,
             low_pass_freq: SharedF32::new(low_pass_freq),
             use_dark_mode,
             start_scanning_on_startup,
+            polling_rate_ms: SharedF32::new(polling_rate_ms),
+            use_custom_polling_rate: Arc::new(AtomicBool::new(
+                use_custom_polling_rate,
+            )),
         }
     }
 
@@ -61,6 +85,12 @@ impl Settings {
             storage,
             names::START_SCANNING_ON_STARTUP,
             &self.start_scanning_on_startup,
+        );
+        set_value(storage, names::POLLING_RATE_MS, &self.polling_rate_ms.load());
+        set_value(
+            storage,
+            names::USE_CUSTOM_POLLING_RATE,
+            &self.use_custom_polling_rate.load(Ordering::Relaxed),
         );
     }
 }

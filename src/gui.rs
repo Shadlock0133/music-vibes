@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, VecDeque},
     iter::from_fn,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread::JoinHandle,
     time::Duration,
 };
@@ -142,7 +145,12 @@ impl DeviceProps {
     }
 }
 
-fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
+fn capture_thread(
+    sound_power: SharedF32,
+    low_pass_freq: SharedF32,
+    polling_rate_ms: SharedF32,
+    use_custom_polling_rate: Arc<AtomicBool>,
+) -> ! {
     let dur = Duration::from_millis(1);
     let mut capture = AudioCapture::init(dur).unwrap();
 
@@ -163,7 +171,16 @@ fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
 
     capture.start().unwrap();
     loop {
-        std::thread::sleep(actual_duration);
+        // Determine sleep duration based on settings
+        let use_custom = use_custom_polling_rate.load(Ordering::Relaxed);
+        let sleep_duration = if use_custom {
+            // Ensure polling rate is at least 1ms
+            Duration::from_millis(polling_rate_ms.load().max(1.0) as u64)
+        } else {
+            actual_duration // Use the default duration based on buffer size
+        };
+        std::thread::sleep(sleep_duration);
+
         capture
             .read_samples::<(), _>(|samples, _| {
                 for value in samples {
@@ -195,9 +212,16 @@ impl GuiApp {
 
         let settings = ctx.storage.map(Settings::load).unwrap_or_default();
         let low_pass_freq = settings.low_pass_freq.clone();
+        let polling_rate_ms = settings.polling_rate_ms.clone();
+        let use_custom_polling_rate = settings.use_custom_polling_rate.clone();
 
-        let _capture_thread = std::thread::spawn(|| {
-            capture_thread(current_sound_power2, low_pass_freq)
+        let _capture_thread = std::thread::spawn(move || {
+            capture_thread(
+                current_sound_power2,
+                low_pass_freq,
+                polling_rate_ms,
+                use_custom_polling_rate,
+            )
         });
 
         let is_scanning = settings.start_scanning_on_startup;
@@ -280,13 +304,16 @@ impl eframe::App for GuiApp {
             });
 
             ui.horizontal(|ui| {
+                // Main Volume Slider
                 let r1 = ui.label("Main volume: ");
                 let mut volume_as_percent = self.settings.main_volume * 100.0;
                 let r2 = ui.add(
                     Slider::new(&mut volume_as_percent, 0.0..=500.0)
                         .suffix("%"),
                 );
-                self.settings.main_volume = volume_as_percent / 100.0;
+                if r2.changed() {
+                    self.settings.main_volume = volume_as_percent / 100.0;
+                }
                 let mut text = LayoutJob::default();
                 text.append(
                     "Controls global volume level\n",
@@ -306,11 +333,9 @@ impl eframe::App for GuiApp {
                     0.0,
                     TextFormat::default(),
                 );
-                r1.union(r2).on_hover_text_at_pointer(
-                    text, // "Controls global volume level\n\
-                         // Warning!!! It's exponential, so 200% is 4 times stronger",
-                );
+                r1.union(r2).on_hover_text_at_pointer(text);
 
+                // Low Pass Freq Slider
                 let mut low_pass_freq = self.settings.low_pass_freq.load();
                 let r1 = ui.label("Low pass freq.: ");
                 let r2 = ui.add(
@@ -318,12 +343,30 @@ impl eframe::App for GuiApp {
                         .logarithmic(true)
                         .integer(),
                 );
+                if r2.changed() {
+                    self.settings.low_pass_freq.store(low_pass_freq);
+                }
                 r1.union(r2).on_hover_text_at_pointer(
                     "Filters out frequencies above this one,\n\
                     leaving only lower frequencies.\n\
                     Defaults to max (20_000 Hz)",
                 );
-                self.settings.low_pass_freq.store(low_pass_freq);
+
+                // Polling Rate Slider
+                let is_custom_polling_enabled = self.settings.use_custom_polling_rate.load(Ordering::Relaxed);
+                if is_custom_polling_enabled {
+                    let r1 = ui.label("Polling Rate (ms): ");
+                    let mut polling_rate = self.settings.polling_rate_ms.load();
+                    let slider = Slider::new(&mut polling_rate, 1.0..=500.0).integer();
+                    let r2 = ui.add(slider); // Use ui.add since it's only shown when enabled
+                    if r2.changed() {
+                        self.settings.polling_rate_ms.store(polling_rate);
+                    }
+                    r1.union(r2).on_hover_text_at_pointer(
+                        "Controls how often audio is analyzed (in milliseconds).\n\
+                        Only use this setting if your device is lagging.",
+                    );
+                }
             });
             ui.separator();
 
@@ -360,6 +403,11 @@ fn settings_window_widget(
                 &mut settings.start_scanning_on_startup,
                 "Start scanning on startup",
             );
+            // Custom Polling Rate Checkbox
+            let mut current_value = settings.use_custom_polling_rate.load(Ordering::Relaxed);
+            if ui.checkbox(&mut current_value, "Use custom polling rate").changed() {
+                settings.use_custom_polling_rate.store(current_value, Ordering::Relaxed);
+            }
         });
 }
 
