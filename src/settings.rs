@@ -33,6 +33,7 @@ pub struct Settings {
     pub polling_rate_ms: SharedF32,
     pub use_custom_polling_rate: Arc<AtomicBool>,
     pub device_settings: HashMap<String, DeviceSettings>,
+    pub save_device_settings: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +48,7 @@ impl Default for Settings {
                 defaults::USE_CUSTOM_POLLING_RATE,
             )),
             device_settings: HashMap::new(),
+            save_device_settings: false,
         }
     }
 }
@@ -59,6 +61,7 @@ mod names {
     pub const POLLING_RATE_MS: &str = "polling_rate_ms";
     pub const USE_CUSTOM_POLLING_RATE: &str = "use_custom_polling_rate";
     pub const DEVICE_SETTINGS: &str = "device_settings";
+    pub const SAVE_DEVICE_SETTINGS: &str = "save_device_settings";
 }
 pub mod defaults {
     pub const MAIN_VOLUME: f32 = 1.0;
@@ -87,6 +90,8 @@ impl Settings {
                 .unwrap_or(defaults::USE_CUSTOM_POLLING_RATE);
         let device_settings: HashMap<String, DeviceSettings> =
             get_value(storage, names::DEVICE_SETTINGS).unwrap_or_default();
+        let save_device_settings =
+            get_value(storage, names::SAVE_DEVICE_SETTINGS).unwrap_or(false);
         Self {
             main_volume,
             low_pass_freq: SharedF32::new(low_pass_freq),
@@ -97,6 +102,7 @@ impl Settings {
                 use_custom_polling_rate,
             )),
             device_settings,
+            save_device_settings,
         }
     }
 
@@ -115,6 +121,9 @@ impl Settings {
             names::USE_CUSTOM_POLLING_RATE,
             &self.use_custom_polling_rate.load(Ordering::Relaxed),
         );
-        set_value(storage, names::DEVICE_SETTINGS, &self.device_settings);
+        if self.save_device_settings {
+            set_value(storage, names::DEVICE_SETTINGS, &self.device_settings);
+        }
+        set_value(storage, names::SAVE_DEVICE_SETTINGS, &self.save_device_settings);
     }
 }

@@ -269,25 +269,27 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn save(&mut self, storage: &mut dyn Storage) {
-        // Update device settings before saving
-        for (device_name, props) in &self.devices {
-            let mut vibrators = Vec::new();
-            for vibe in &props.vibrators {
-                vibrators.push(VibratorSettings {
-                    is_enabled: vibe.is_enabled,
-                    multiplier: vibe.multiplier,
-                    min: vibe.min,
-                    max: vibe.max,
-                });
+        // Update device settings before saving if the toggle is enabled
+        if self.settings.save_device_settings {
+            for (device_name, props) in &self.devices {
+                let mut vibrators = Vec::new();
+                for vibe in &props.vibrators {
+                    vibrators.push(VibratorSettings {
+                        is_enabled: vibe.is_enabled,
+                        multiplier: vibe.multiplier,
+                        min: vibe.min,
+                        max: vibe.max,
+                    });
+                }
+                let device_settings = DeviceSettings {
+                    is_enabled: props.is_enabled,
+                    multiplier: props.multiplier,
+                    min: props.min,
+                    max: props.max,
+                    vibrators,
+                };
+                self.settings.device_settings.insert(device_name.clone(), device_settings);
             }
-            let device_settings = DeviceSettings {
-                is_enabled: props.is_enabled,
-                multiplier: props.multiplier,
-                min: props.min,
-                max: props.max,
-                vibrators,
-            };
-            self.settings.device_settings.insert(device_name.clone(), device_settings);
         }
         self.settings.save(storage);
         storage.flush();
@@ -469,6 +471,10 @@ fn settings_window_widget(
             if ui.checkbox(&mut current_value, "Use custom polling rate").changed() {
                 settings.use_custom_polling_rate.store(current_value, Ordering::Relaxed);
             }
+            ui.checkbox(
+                &mut settings.save_device_settings,
+                "Remember device settings",
+            );
         });
 }
 
