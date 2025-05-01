@@ -11,7 +11,7 @@ use std::{
 
 use audio_capture::win::capture::AudioCapture;
 use buttplug::{
-    client::{ButtplugClient, ButtplugClientDevice, VibrateCommand},
+    client::{ButtplugClient, ButtplugClientDevice, VibrateCommand, ButtplugClientError},
     core::message::ActuatorType,
 };
 use clap::Parser;
@@ -24,6 +24,7 @@ use eframe::{
     CreationContext, Storage,
 };
 use tokio::runtime::Runtime;
+use anyhow::Result;
 
 use crate::{
     settings::{defaults, Settings, DeviceSettings, VibratorSettings},
@@ -45,15 +46,25 @@ pub fn gui(args: Gui) {
     );
 }
 
+enum ConnectionState {
+    Disconnected,   // necessary in case server can't connect
+    Connecting,
+    Connected,
+    Error(String),
+}
+
 struct GuiApp {
     runtime: tokio::runtime::Runtime,
-    client: ButtplugClient,
+    client: Option<ButtplugClient>,
+    connection_state: ConnectionState,
+    connection_task: Option<tokio::task::JoinHandle<Result<ButtplugClient, ButtplugClientError>>>,
+    server_addr: Option<String>,
     devices: HashMap<String, DeviceProps>,
     current_sound_power: SharedF32,
     _capture_thread: JoinHandle<()>,
-    is_scanning: bool,
+    is_scanning: bool, // Keep this to track CURRENT state
     show_settings: bool,
-    // persistent settings
+    // Persistent settings
     settings: Settings,
 }
 
@@ -118,7 +129,13 @@ impl DeviceProps {
                     .count()
             })
             .unwrap_or_default();
-        let device_settings = settings.device_settings.get(device.name().as_str());
+
+        let device_settings = if settings.save_device_settings {
+            settings.device_settings.get(device.name().as_str())
+        } else {
+            None
+        };
+
         let (is_enabled, multiplier, min, max, vibrators) = if let Some(ds) = device_settings {
             let mut vib_props = Vec::new();
             for vs in &ds.vibrators {
@@ -129,7 +146,6 @@ impl DeviceProps {
                     max: vs.max,
                 });
             }
-            // If the number of vibrators in settings doesn't match the device, fill with defaults
             while vib_props.len() < vibe_count {
                 vib_props.push(VibratorProps::default());
             }
@@ -228,10 +244,17 @@ fn capture_thread(
 impl GuiApp {
     fn new(server_addr: Option<String>, ctx: &CreationContext) -> Self {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let client = runtime
-            .block_on(util::start_bp_server(server_addr))
-            .unwrap();
+        let client = None;
         let devices = Default::default();
+
+        // --- Start connection attempt immediately ---
+        let connection_state = ConnectionState::Connecting;
+        let server_addr_clone = server_addr.clone();
+        let connection_task = Some(runtime.spawn(async move {
+            util::start_bp_server(server_addr_clone).await
+        }));
+        // --- End immediate connection attempt ---
+
         let current_sound_power = SharedF32::new(0.0);
         let current_sound_power2 = current_sound_power.clone();
 
@@ -249,18 +272,18 @@ impl GuiApp {
             )
         });
 
-        let is_scanning = settings.start_scanning_on_startup;
-        if is_scanning {
-            runtime.spawn(client.start_scanning());
-        }
+        let is_scanning = false; // Start with scanning off, let the setting control startup scan
 
         GuiApp {
             runtime,
             client,
+            connection_state,
+            connection_task,
+            server_addr,
             devices,
             current_sound_power,
             _capture_thread,
-            is_scanning,
+            is_scanning, // Add is_scanning to the struct initialization
             show_settings: false,
             settings,
         }
@@ -291,6 +314,7 @@ impl eframe::App for GuiApp {
                 self.settings.device_settings.insert(device_name.clone(), device_settings);
             }
         }
+        // Don't save the current scanning state, only the startup setting is saved now
         self.settings.save(storage);
         storage.flush();
     }
@@ -301,20 +325,84 @@ impl eframe::App for GuiApp {
             false => Visuals::light(),
         };
         ctx.set_visuals(visuals);
+
+        // --- Connection Handling ---
+        if let Some(task) = self.connection_task.take() { // Take the task to await it
+            if task.is_finished() {
+                match self.runtime.block_on(task) {
+                    Ok(Ok(client)) => {
+                        self.client = Some(client);
+                        self.connection_state = ConnectionState::Connected;
+                        // Start scanning only if it was enabled when the app last closed
+                        if self.settings.start_scanning_on_startup { // Check the setting
+                            if let Some(client) = &self.client {
+                                self.runtime.spawn(client.start_scanning());
+                                self.is_scanning = true; // Update the current state
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        self.connection_state = ConnectionState::Error(format!("Connection failed: {}", e));
+                    }
+                    Err(e) => {
+                        self.connection_state = ConnectionState::Error(format!("Connection task panicked unexpectedly: {:?}", e));
+                    }
+                }
+            } else {
+                self.connection_task = Some(task);
+            }
+        }
+        // --- End Connection Handling ---
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let scan_label = if self.is_scanning {
-                    "Stop scanning"
-                } else {
-                    "Start scanning"
-                };
-                if ui.selectable_label(self.is_scanning, scan_label).clicked() {
-                    self.is_scanning = !self.is_scanning;
-                    if self.is_scanning {
-                        self.runtime.spawn(self.client.start_scanning());
-                    } else {
-                        self.runtime.spawn(self.client.stop_scanning());
+                // Connection/Scanning controls - only show if not connecting
+                if !matches!(self.connection_state, ConnectionState::Connecting) {
+                    match self.connection_state {
+                        ConnectionState::Disconnected | ConnectionState::Error(_) => {
+                            if ui.button("Connect to Server").clicked() {
+                                self.connection_state = ConnectionState::Connecting;
+                                let server_addr_clone = self.server_addr.clone();
+                                self.connection_task = Some(self.runtime.spawn(async move {
+                                    util::start_bp_server(server_addr_clone).await
+                                }));
+                            }
+                        }
+                        ConnectionState::Connected => {
+                            // Add scanning controls here later if needed
+                            // For now, scanning starts automatically if configured
+                            if let Some(client) = &self.client {
+                                let scan_label = if self.is_scanning { // Use self.is_scanning
+                                    "Stop scanning"
+                                } else {
+                                    "Start scanning"
+                                };
+                                if ui.selectable_label(self.is_scanning, scan_label).clicked() { // Use self.is_scanning
+                                    if self.is_scanning {
+                                        self.runtime.spawn(client.stop_scanning());
+                                        self.is_scanning = false; // Update is_scanning state
+                                    } else {
+                                        self.runtime.spawn(client.start_scanning());
+                                        self.is_scanning = true; // Update is_scanning state
+                                    }
+                                }
+                            }
+                        }
+                        ConnectionState::Connecting => {} // Handled above
                     }
+                }
+                
+                match &self.connection_state {
+                    ConnectionState::Disconnected => {
+                        ui.label("Disconnected");
+                    }
+                    ConnectionState::Connecting => {
+                        ui.label("Connecting...");
+                    }
+                    ConnectionState::Error(_msg) => {
+                        ui.colored_label(Color32::RED, "Error");
+                    }
+                    ConnectionState::Connected => { /* No status needed when connected */ }
                 }
 
                 if ui.button("Settings").clicked() {
@@ -332,12 +420,15 @@ impl eframe::App for GuiApp {
                     .add_sized([stop_button_width, 30.0], stop_button)
                     .clicked()
                 {
-                    self.runtime.spawn(self.client.stop_all_devices());
-                    for device in self.devices.values_mut() {
-                        device.is_enabled = false;
+                    if let Some(client) = &self.client {
+                        self.runtime.spawn(client.stop_all_devices());
+                        for device in self.devices.values_mut() {
+                            device.is_enabled = false;
+                        }
                     }
                 }
             });
+
             ui.separator();
             let main_mul = self.settings.main_volume.powi(2);
             let sound_power =
@@ -362,7 +453,6 @@ impl eframe::App for GuiApp {
                     self.settings.main_volume = volume_as_percent / 100.0;
                 }
                 if slider_response.double_clicked() {
-                    // Reset on double click
                     self.settings.main_volume = defaults::MAIN_VOLUME;
                 }
                 let mut text = LayoutJob::default();
@@ -434,13 +524,20 @@ impl eframe::App for GuiApp {
             ui.separator();
 
             ui.heading("Devices");
-            for device in self.client.devices() {
-                let props =
-                    self.devices.entry(device.name().to_string()).or_insert_with(|| {
-                        DeviceProps::new(&self.runtime, device.clone(), &self.settings)
-                    });
-                device_widget(ui, device, props, sound_power, &self.runtime);
-            }
+            // Only interact with devices if connected
+            if let Some(client) = &self.client {
+                 // Add new devices / update existing ones
+                for device in client.devices() {
+                    let device_name = device.name().to_string();
+                    if !self.devices.contains_key(&device_name) {
+                        let props = DeviceProps::new(&self.runtime, device.clone(), &self.settings);
+                        self.devices.insert(device_name.clone(), props);
+                    }
+                    // Get mutable props for the widget
+                    let props = self.devices.get_mut(&device_name).unwrap(); // Should always exist now
+                    device_widget(ui, device, props, sound_power, &self.runtime);
+                }
+            } // TODO: Handle device removal later if needed
         });
         settings_window_widget(
             ctx,
@@ -462,11 +559,10 @@ fn settings_window_widget(
         .collapsible(false)
         .show(ctx, |ui| {
             ui.checkbox(&mut settings.use_dark_mode, "Use dark mode");
-            ui.checkbox(
+            ui.checkbox( // Add the checkbox back
                 &mut settings.start_scanning_on_startup,
                 "Start scanning on startup",
             );
-            // Custom Polling Rate Checkbox
             let mut current_value = settings.use_custom_polling_rate.load(Ordering::Relaxed);
             if ui.checkbox(&mut current_value, "Use custom polling rate").changed() {
                 settings.use_custom_polling_rate.store(current_value, Ordering::Relaxed);
@@ -523,13 +619,17 @@ fn device_widget(
                 "Enable"
             };
             let enable_button = SelectableLabel::new(props.is_enabled, label);
-            ui.group(|ui| {
-                if ui.add_sized([60.0, 60.0], enable_button).clicked() {
-                    props.is_enabled = !props.is_enabled;
-                    if !props.is_enabled {
-                        runtime.spawn(device.stop());
+            // Changed ui.group to ui.vertical and wrapped buttons in groups
+            ui.vertical(|ui| {
+                // Group for Enable button
+                ui.group(|ui| {
+                    if ui.add_sized([60.0, 60.0], enable_button).clicked() {
+                        props.is_enabled = !props.is_enabled;
+                        if !props.is_enabled {
+                            runtime.spawn(device.stop());
+                        }
                     }
-                }
+                });
             });
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
@@ -546,17 +646,17 @@ fn device_widget(
                     ui.label("Multiplier: ");
                     let slider_response = ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
                     if slider_response.double_clicked() {
-                        props.multiplier = 1.0; // Default DeviceProps multiplier
+                        props.multiplier = 1.0;
                     }
                     ui.label("Minimum (cut-off): ");
-                    let slider_response = ui.add(Slider::new(&mut props.min, 0.0..=1.0));
-                     if slider_response.double_clicked() {
-                        props.min = 0.0; // Default DeviceProps min
+                    let slider_response = ui.add(Slider::new(&mut props.min, 0.0..=1.0).fixed_decimals(2));
+                    if slider_response.double_clicked() {
+                        props.min = 0.0;
                     }
                     ui.label("Maximum: ");
-                    let slider_response = ui.add(Slider::new(&mut props.max, 0.0..=1.0));
-                     if slider_response.double_clicked() {
-                        props.max = 1.0; // Default DeviceProps max
+                    let slider_response = ui.add(Slider::new(&mut props.max, 0.0..=1.0).fixed_decimals(2));
+                    if slider_response.double_clicked() {
+                        props.max = 1.0;
                     }
                 });
                 ui.push_id(format!("vibrators_{}", device.name()), |ui| {
@@ -590,7 +690,7 @@ fn device_widget(
                     runtime.spawn(device.vibrate(&speed_cmd));
                 }
             })
-        })
+        });
     });
 }
 
@@ -605,21 +705,17 @@ fn vibrator_widget(ui: &mut Ui, index: usize, vibe: &mut VibratorProps) {
         ui.label("Multiplier: ");
         let slider_response = ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
         if slider_response.double_clicked() {
-            vibe.multiplier = 1.0; // Default VibratorProps multiplier
+            vibe.multiplier = 1.0;
         }
         ui.label("Minimum (cut-off): ");
-        let slider_response = ui.add(Slider::new(&mut vibe.min, 0.0..=1.0));
+        let slider_response = ui.add(Slider::new(&mut vibe.min, 0.0..=1.0).fixed_decimals(2));
         if slider_response.double_clicked() {
-            vibe.min = 0.0; // Default VibratorProps min
+            vibe.min = 0.0;
         }
         ui.label("Maximum: ");
-        let slider_response = ui.add(Slider::new(&mut vibe.max, 0.0..=1.0));
+        let slider_response = ui.add(Slider::new(&mut vibe.max, 0.0..=1.0).fixed_decimals(2));
         if slider_response.double_clicked() {
-            vibe.max = 1.0; // Default VibratorProps max
-        }
-
-        if ui.button("Reset").clicked() {
-            *vibe = VibratorProps::default();
+            vibe.max = 1.0;
         }
     });
 }

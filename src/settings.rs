@@ -29,7 +29,7 @@ pub struct Settings {
     pub main_volume: f32,
     pub low_pass_freq: SharedF32,
     pub use_dark_mode: bool,
-    pub start_scanning_on_startup: bool,
+    pub start_scanning_on_startup: bool, // Reverted field name
     pub polling_rate_ms: SharedF32,
     pub use_custom_polling_rate: Arc<AtomicBool>,
     pub device_settings: HashMap<String, DeviceSettings>,
@@ -42,7 +42,7 @@ impl Default for Settings {
             main_volume: defaults::MAIN_VOLUME,
             low_pass_freq: SharedF32::new(defaults::LOW_PASS_FREQ),
             use_dark_mode: defaults::DARK_MODE,
-            start_scanning_on_startup: defaults::START_SCANNING_ON_STARTUP,
+            start_scanning_on_startup: defaults::START_SCANNING_ON_STARTUP, // Reverted field name and default
             polling_rate_ms: SharedF32::new(defaults::POLLING_RATE_MS),
             use_custom_polling_rate: Arc::new(AtomicBool::new(
                 defaults::USE_CUSTOM_POLLING_RATE,
@@ -57,7 +57,7 @@ mod names {
     pub const MAIN_VOLUME: &str = "main_volume";
     pub const LOW_PASS_FREQ: &str = "low_pass_freq";
     pub const DARK_MODE: &str = "dark_mode";
-    pub const START_SCANNING_ON_STARTUP: &str = "start_scanning_on_startup";
+    pub const START_SCANNING_ON_STARTUP: &str = "start_scanning_on_startup"; // Reverted constant name
     pub const POLLING_RATE_MS: &str = "polling_rate_ms";
     pub const USE_CUSTOM_POLLING_RATE: &str = "use_custom_polling_rate";
     pub const DEVICE_SETTINGS: &str = "device_settings";
@@ -67,7 +67,7 @@ pub mod defaults {
     pub const MAIN_VOLUME: f32 = 1.0;
     pub const LOW_PASS_FREQ: f32 = 20_000.0;
     pub const DARK_MODE: bool = true;
-    pub const START_SCANNING_ON_STARTUP: bool = false;
+    pub const START_SCANNING_ON_STARTUP: bool = false; // Reverted default value
     pub const POLLING_RATE_MS: f32 = 20.0;
     pub const USE_CUSTOM_POLLING_RATE: bool = false;
 }
@@ -80,9 +80,9 @@ impl Settings {
             .unwrap_or(defaults::LOW_PASS_FREQ);
         let use_dark_mode =
             get_value(storage, names::DARK_MODE).unwrap_or(defaults::DARK_MODE);
+        // Reverted variable name, storage key, and default
         let start_scanning_on_startup =
-            get_value(storage, names::START_SCANNING_ON_STARTUP)
-                .unwrap_or(defaults::START_SCANNING_ON_STARTUP);
+            get_value(storage, names::START_SCANNING_ON_STARTUP).unwrap_or(defaults::START_SCANNING_ON_STARTUP);
         let polling_rate_ms = get_value(storage, names::POLLING_RATE_MS)
             .unwrap_or(defaults::POLLING_RATE_MS);
         let use_custom_polling_rate =
@@ -96,7 +96,7 @@ impl Settings {
             main_volume,
             low_pass_freq: SharedF32::new(low_pass_freq),
             use_dark_mode,
-            start_scanning_on_startup,
+            start_scanning_on_startup, // Reverted field assignment
             polling_rate_ms: SharedF32::new(polling_rate_ms),
             use_custom_polling_rate: Arc::new(AtomicBool::new(
                 use_custom_polling_rate,
@@ -110,11 +110,8 @@ impl Settings {
         set_value(storage, names::MAIN_VOLUME, &self.main_volume);
         set_value(storage, names::LOW_PASS_FREQ, &self.low_pass_freq.load());
         set_value(storage, names::DARK_MODE, &self.use_dark_mode);
-        set_value(
-            storage,
-            names::START_SCANNING_ON_STARTUP,
-            &self.start_scanning_on_startup,
-        );
+        // Reverted storage key and field name
+        set_value(storage, names::START_SCANNING_ON_STARTUP, &self.start_scanning_on_startup);
         set_value(storage, names::POLLING_RATE_MS, &self.polling_rate_ms.load());
         set_value(
             storage,
