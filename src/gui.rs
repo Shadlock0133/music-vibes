@@ -1,14 +1,17 @@
 use std::{
     collections::{HashMap, VecDeque},
     iter::from_fn,
-    sync::Arc,
-    thread::JoinHandle,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::JoinHandle, time::Instant,
     time::Duration,
 };
 
 use audio_capture::win::capture::AudioCapture;
 use buttplug::{
-    client::{ButtplugClient, ButtplugClientDevice, VibrateCommand},
+    client::{ButtplugClient, ButtplugClientDevice, VibrateCommand, ButtplugClientError},
     core::message::ActuatorType,
 };
 use clap::Parser;
@@ -23,7 +26,7 @@ use eframe::{
 use tokio::runtime::Runtime;
 
 use crate::{
-    settings::Settings,
+    settings::{defaults, Settings, DeviceSettings, VibratorSettings},
     util::{self, MinCutoff, SharedF32},
 };
 
@@ -42,16 +45,39 @@ pub fn gui(args: Gui) {
     );
 }
 
+#[allow(dead_code)]
+enum ConnectionState {
+    Disconnected, // Necessary in case of server disconnect
+    Connecting,
+    Connected,
+    Error(String),
+}
+
+// Stop devices on program shutdown
+impl Drop for GuiApp {
+    fn drop(&mut self) {
+        if let Some(client) = &self.client {
+            if let Err(e) = self.runtime.block_on(client.stop_all_devices()) {
+                eprintln!("Error stopping devices: {:?}", e);
+            }
+        }
+    }
+}
+
 struct GuiApp {
     runtime: tokio::runtime::Runtime,
-    client: ButtplugClient,
-    devices: HashMap<u32, DeviceProps>,
-    current_sound_power: SharedF32,
+    client: Option<ButtplugClient>,
+    connection_state: ConnectionState,
+    connection_task: Option<tokio::task::JoinHandle<Result<ButtplugClient, ButtplugClientError>>>,
+    server_addr: Option<String>,
+    devices: HashMap<String, DeviceProps>,
+    sound_power: SharedF32,
     _capture_thread: JoinHandle<()>,
     is_scanning: bool,
     show_settings: bool,
-    // persistent settings
-    settings: Settings,
+    vibration_level: f32,
+    hold_start_time: Option<Instant>,
+    settings: Settings, // Persistent settings
 }
 
 struct DeviceProps {
@@ -64,6 +90,7 @@ struct DeviceProps {
 }
 
 // TEMP: if readout returned an error, SharedF32 will be set to NaN
+#[allow(dead_code)]
 struct BatteryState(SharedF32, tokio::task::JoinHandle<()>);
 
 impl BatteryState {
@@ -104,7 +131,7 @@ async fn battery_check_bg_task(
 }
 
 impl DeviceProps {
-    fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>) -> Self {
+    fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>, settings: &Settings) -> Self {
         let vibe_count = device
             .message_attributes()
             .scalar_cmd()
@@ -115,15 +142,45 @@ impl DeviceProps {
                     .count()
             })
             .unwrap_or_default();
-        let vibrators = from_fn(|| Some(VibratorProps::default()))
-            .take(vibe_count)
-            .collect();
+
+        let device_settings = if settings.save_device_settings {
+            settings.device_settings.get(device.name().as_str())
+        } else {
+            None
+        };
+
+        let (_is_enabled, multiplier, min, max, vibrators) = if let Some(ds) = device_settings {
+            let mut vib_props = Vec::new();
+            for vs in &ds.vibrators {
+                vib_props.push(VibratorProps {
+                    is_enabled: vs.is_enabled,
+                    multiplier: vs.multiplier,
+                    min: vs.min,
+                    max: vs.max,
+                });
+            }
+            while vib_props.len() < vibe_count {
+                vib_props.push(VibratorProps::default());
+            }
+            (
+                ds.is_enabled,
+                ds.multiplier,
+                ds.min,
+                ds.max,
+                vib_props,
+            )
+        } else {
+            let vibrators = from_fn(|| Some(VibratorProps::default()))
+                .take(vibe_count)
+                .collect();
+            (false, 1.0, 0.0, 1.0, vibrators)
+        };
         Self {
-            is_enabled: false,
+            is_enabled: false, // Start device disabled
             battery_state: BatteryState::new(runtime, device),
-            multiplier: 1.0,
-            min: 0.0,
-            max: 1.0,
+            multiplier,
+            min,
+            max,
             vibrators,
         }
     }
@@ -142,7 +199,12 @@ impl DeviceProps {
     }
 }
 
-fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
+fn capture_thread(
+    sound_power: SharedF32,
+    low_pass_freq: SharedF32,
+    polling_rate_ms: SharedF32,
+    use_polling_rate: Arc<AtomicBool>,
+) -> ! {
     let dur = Duration::from_millis(1);
     let mut capture = AudioCapture::init(dur).unwrap();
 
@@ -163,7 +225,14 @@ fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
 
     capture.start().unwrap();
     loop {
-        std::thread::sleep(actual_duration);
+        let use_custom = use_polling_rate.load(Ordering::Relaxed);
+        let sleep_duration = if use_custom {
+            Duration::from_millis(polling_rate_ms.load().max(1.0) as u64)
+        } else {
+            actual_duration
+        };
+        std::thread::sleep(sleep_duration);
+
         capture
             .read_samples::<(), _>(|samples, _| {
                 for value in samples {
@@ -186,40 +255,76 @@ fn capture_thread(sound_power: SharedF32, low_pass_freq: SharedF32) -> ! {
 impl GuiApp {
     fn new(server_addr: Option<String>, ctx: &CreationContext) -> Self {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let client = runtime
-            .block_on(util::start_bp_server(server_addr))
-            .unwrap();
+        let client = None;
         let devices = Default::default();
-        let current_sound_power = SharedF32::new(0.0);
-        let current_sound_power2 = current_sound_power.clone();
+
+        let connection_state = ConnectionState::Connecting;
+        let server_addr_clone = server_addr.clone();
+        let connection_task = Some(runtime.spawn(async move {
+            util::start_bp_server(server_addr_clone).await
+        }));
+
+        let sound_power = SharedF32::new(0.0);
+        let sound_power2 = sound_power.clone();
 
         let settings = ctx.storage.map(Settings::load).unwrap_or_default();
         let low_pass_freq = settings.low_pass_freq.clone();
+        let polling_rate_ms = settings.polling_rate_ms.clone();
+        let use_polling_rate = settings.use_polling_rate.clone();
 
-        let _capture_thread = std::thread::spawn(|| {
-            capture_thread(current_sound_power2, low_pass_freq)
+        let _capture_thread = std::thread::spawn(move || {
+            capture_thread(
+                sound_power2,
+                low_pass_freq,
+                polling_rate_ms,
+                use_polling_rate,
+            )
         });
 
-        let is_scanning = settings.start_scanning_on_startup;
-        if is_scanning {
-            runtime.spawn(client.start_scanning());
-        }
+        let is_scanning = false;
 
         GuiApp {
             runtime,
             client,
+            connection_state,
+            connection_task,
+            server_addr,
             devices,
-            current_sound_power,
+            sound_power,
             _capture_thread,
             is_scanning,
             show_settings: false,
             settings,
+            vibration_level: 0.0,
+            hold_start_time: None,
         }
     }
 }
 
 impl eframe::App for GuiApp {
     fn save(&mut self, storage: &mut dyn Storage) {
+        // Update device settings before saving if the toggle is enabled
+        if self.settings.save_device_settings {
+            for (device_name, props) in &self.devices {
+                let mut vibrators = Vec::new();
+                for vibe in &props.vibrators {
+                    vibrators.push(VibratorSettings {
+                        is_enabled: vibe.is_enabled,
+                        multiplier: vibe.multiplier,
+                        min: vibe.min,
+                        max: vibe.max,
+                    });
+                }
+                let device_settings = DeviceSettings {
+                    is_enabled: false,  // Start device disabled
+                    multiplier: props.multiplier,
+                    min: props.min,
+                    max: props.max,
+                    vibrators,
+                };
+                self.settings.device_settings.insert(device_name.clone(), device_settings);
+            }
+        }
         self.settings.save(storage);
         storage.flush();
     }
@@ -230,20 +335,80 @@ impl eframe::App for GuiApp {
             false => Visuals::light(),
         };
         ctx.set_visuals(visuals);
+
+        // --- Connection Handling ---
+        if let Some(task) = self.connection_task.take() {
+            if task.is_finished() {
+                match self.runtime.block_on(task) {
+                    Ok(Ok(client)) => {
+                        self.client = Some(client);
+                        self.connection_state = ConnectionState::Connected;
+                        if self.settings.start_scanning_on_startup {
+                            if let Some(client) = &self.client {
+                                self.runtime.spawn(client.start_scanning());
+                                self.is_scanning = true;
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        self.connection_state = ConnectionState::Error(format!("Connection failed: {}", e));
+                    }
+                    Err(e) => {
+                        self.connection_state = ConnectionState::Error(format!("Connection task panicked unexpectedly: {:?}", e));
+                    }
+                }
+            } else {
+                self.connection_task = Some(task);
+            }
+        }
+        // --- End Connection Handling ---
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let scan_label = if self.is_scanning {
-                    "Stop scanning"
-                } else {
-                    "Start scanning"
-                };
-                if ui.selectable_label(self.is_scanning, scan_label).clicked() {
-                    self.is_scanning = !self.is_scanning;
-                    if self.is_scanning {
-                        self.runtime.spawn(self.client.start_scanning());
-                    } else {
-                        self.runtime.spawn(self.client.stop_scanning());
+                if !matches!(self.connection_state, ConnectionState::Connecting) {
+                    match self.connection_state {
+                        ConnectionState::Disconnected | ConnectionState::Error(_) => {
+                            if ui.button("Connect to Server").clicked() {
+                                self.connection_state = ConnectionState::Connecting;
+                                let server_addr_clone = self.server_addr.clone();
+                                self.connection_task = Some(self.runtime.spawn(async move {
+                                    util::start_bp_server(server_addr_clone).await
+                                }));
+                            }
+                        }
+                        ConnectionState::Connected => {
+                            if let Some(client) = &self.client {
+                                let scan_label = if self.is_scanning {
+                                    "Stop scanning"
+                                } else {
+                                    "Start scanning"
+                                };
+                                if ui.selectable_label(self.is_scanning, scan_label).clicked() {
+                                    if self.is_scanning {
+                                        self.runtime.spawn(client.stop_scanning());
+                                        self.is_scanning = false;
+                                    } else {
+                                        self.runtime.spawn(client.start_scanning());
+                                        self.is_scanning = true;
+                                    }
+                                }
+                            }
+                        }
+                        ConnectionState::Connecting => {}
                     }
+                }
+                
+                match &self.connection_state {
+                    ConnectionState::Disconnected => {
+                        ui.label("Disconnected");
+                    }
+                    ConnectionState::Connecting => {
+                        ui.label("Connecting...");
+                    }
+                    ConnectionState::Error(_msg) => {
+                        ui.colored_label(Color32::RED, "Error");
+                    }
+                    ConnectionState::Connected => { /* No status needed when connected */ }
                 }
 
                 if ui.button("Settings").clicked() {
@@ -261,32 +426,91 @@ impl eframe::App for GuiApp {
                     .add_sized([stop_button_width, 30.0], stop_button)
                     .clicked()
                 {
-                    self.runtime.spawn(self.client.stop_all_devices());
-                    for device in self.devices.values_mut() {
-                        device.is_enabled = false;
+                    if let Some(client) = &self.client {
+                        self.runtime.spawn(client.stop_all_devices());
+                        for device in self.devices.values_mut() {
+                            device.is_enabled = false;
+                        }
                     }
                 }
             });
+
             ui.separator();
+            
+            let delta_time = ctx.input().stable_dt;
             let main_mul = self.settings.main_volume.powi(2);
             let sound_power =
-                (self.current_sound_power.load() * main_mul).clamp(0.0, 1.0);
+                (self.sound_power.load() * main_mul).clamp(0.0, 1.0);
+
+            // --- Calculate Persistent Vibration Level ---
+            let mut persistent_level = self.vibration_level;
+
+            if !self.settings.enable_persistence {
+                persistent_level = sound_power;
+                self.hold_start_time = None;
+            } else {
+                if sound_power >= persistent_level {
+                    persistent_level = sound_power;
+                    self.hold_start_time = None;
+                } else {
+                    match self.hold_start_time {
+                        None => {
+                            if self.settings.hold_delay_ms >= 1.0 {
+                                self.hold_start_time = Some(Instant::now());
+                            } else {
+                                let decay_rate_per_sec = self.settings.decay_rate_per_sec;
+                                if decay_rate_per_sec <= 0.0 {
+                                    persistent_level = sound_power;
+                                } else {
+                                    let decay_amount = decay_rate_per_sec * delta_time;
+                                    persistent_level -= decay_amount;
+                                    persistent_level = persistent_level.max(sound_power);
+                                }
+                            }
+                        }
+                        Some(start_time) => {
+                            let hold_duration = Duration::from_millis(self.settings.hold_delay_ms as u64);
+                            if start_time.elapsed() >= hold_duration {
+                                let decay_rate_per_sec = self.settings.decay_rate_per_sec;
+                                if decay_rate_per_sec <= 0.0 {
+                                    persistent_level = sound_power;
+                                    self.hold_start_time = None;
+                                } else {
+                                    let decay_amount = decay_rate_per_sec * delta_time;
+                                    persistent_level -= decay_amount;
+                                    persistent_level = persistent_level.max(sound_power);
+                                }
+                            }
+                        }
+                    }
+                }
+                persistent_level = persistent_level.max(0.0);
+            }
+            self.vibration_level = persistent_level.clamp(0.0, 1.0);
+            // --- End Persistent Vibration Level Calculation ---
+
             ui.horizontal(|ui| {
                 ui.label(format!(
-                    "Current volume: {:.2}%",
-                    sound_power * 100.0
+                    "Current Output: {:.2}%",
+                    self.vibration_level * 100.0
                 ));
-                ui.add(ProgressBar::new(sound_power));
+                ui.add(ProgressBar::new(self.vibration_level));
             });
 
             ui.horizontal(|ui| {
+                // Main Volume Slider
                 let r1 = ui.label("Main volume: ");
                 let mut volume_as_percent = self.settings.main_volume * 100.0;
-                let r2 = ui.add(
+                let slider_response = ui.add(
                     Slider::new(&mut volume_as_percent, 0.0..=500.0)
                         .suffix("%"),
                 );
-                self.settings.main_volume = volume_as_percent / 100.0;
+                if slider_response.changed() {
+                    self.settings.main_volume = volume_as_percent / 100.0;
+                }
+                if slider_response.double_clicked() {
+                    self.settings.main_volume = defaults::MAIN_VOLUME;
+                }
                 let mut text = LayoutJob::default();
                 text.append(
                     "Controls global volume level\n",
@@ -306,34 +530,98 @@ impl eframe::App for GuiApp {
                     0.0,
                     TextFormat::default(),
                 );
-                r1.union(r2).on_hover_text_at_pointer(
-                    text, // "Controls global volume level\n\
-                         // Warning!!! It's exponential, so 200% is 4 times stronger",
-                );
+                r1.union(slider_response).on_hover_text_at_pointer(text);
 
+                // Low Pass Freq Slider
                 let mut low_pass_freq = self.settings.low_pass_freq.load();
                 let r1 = ui.label("Low pass freq.: ");
-                let r2 = ui.add(
+                let slider_response = ui.add(
                     Slider::new(&mut low_pass_freq, 0.0..=20_000.0)
                         .logarithmic(true)
                         .integer(),
                 );
-                r1.union(r2).on_hover_text_at_pointer(
+                if slider_response.changed() {
+                    self.settings.low_pass_freq.store(low_pass_freq);
+                }
+                if slider_response.double_clicked() {
+                    self.settings
+                        .low_pass_freq
+                        .store(defaults::LOW_PASS_FREQ);
+                }
+                r1.union(slider_response).on_hover_text_at_pointer(
                     "Filters out frequencies above this one,\n\
                     leaving only lower frequencies.\n\
                     Defaults to max (20_000 Hz)",
                 );
-                self.settings.low_pass_freq.store(low_pass_freq);
+                // Polling Rate Slider
+                let is_custom_polling_enabled = self.settings.use_polling_rate.load(Ordering::Relaxed);
+                if is_custom_polling_enabled {
+                    let r1 = ui.label("Polling Rate: ");
+                    let mut polling_rate = self.settings.polling_rate_ms.load();
+                    let slider_response = ui.add(
+                        Slider::new(&mut polling_rate, 1.0..=500.0)
+                            .integer()
+                            .logarithmic(true),
+                    );
+                    if slider_response.changed() {
+                        self.settings.polling_rate_ms.store(polling_rate);
+                    }
+                    if slider_response.double_clicked() {
+                        self.settings
+                            .polling_rate_ms
+                            .store(defaults::POLLING_RATE_MS);
+                    }
+                    r1.union(slider_response).on_hover_text_at_pointer(
+                        "Controls how often audio is analyzed (in milliseconds).\n\
+                        Useful if your device is lagging.",
+                    );
+                }
             });
+            // --- Persistence Controls ---
+            ui.horizontal(|ui| {
+                if self.settings.enable_persistence {
+                    ui.horizontal(|ui| {
+                        // Hold Delay Slider
+                        let r1 = ui.label("Hold Delay: ");
+                        let slider_response = ui.add(
+                            Slider::new(&mut self.settings.hold_delay_ms, 0.0..=500.0)
+                                .integer()
+                                .logarithmic(true),
+                        );
+                        if slider_response.double_clicked() {
+                            self.settings.hold_delay_ms = defaults::HOLD_DELAY_MS;
+                        }
+                        r1.union(slider_response).on_hover_text_at_pointer("Time to hold peak vibration after sound drops (in milliseconds).");
+
+                        // Decay Rate Slider                       
+                        let r1 = ui.label("Decay Rate: ");
+                        let slider_response = ui.add(
+                            Slider::new(&mut self.settings.decay_rate_per_sec, 0.01..=4.0)
+                            .fixed_decimals(2),
+                        );
+                        if slider_response.double_clicked() {
+                            self.settings.decay_rate_per_sec = defaults::DECAY_RATE_PER_SEC;
+                        }
+                        r1.union(slider_response).on_hover_text_at_pointer("How fast vibration fades after hold delay (rate per second).");
+
+                    });
+                }
+            });
+            // --- End Persistence Controls ---            
+
             ui.separator();
 
             ui.heading("Devices");
-            for device in self.client.devices() {
-                let props =
-                    self.devices.entry(device.index()).or_insert_with(|| {
-                        DeviceProps::new(&self.runtime, device.clone())
-                    });
-                device_widget(ui, device, props, sound_power, &self.runtime);
+            if let Some(client) = &self.client {
+                for device in client.devices() {
+                    let device_name = device.name().to_string();
+                    if !self.devices.contains_key(&device_name) {
+                        let props = DeviceProps::new(&self.runtime, device.clone(), &self.settings);
+                        self.devices.insert(device_name.clone(), props);
+                    }
+                    let props = self.devices.get_mut(&device_name).unwrap();
+                    device_widget(ui, device, props, self.vibration_level, &self.runtime);
+                }
             }
         });
         settings_window_widget(
@@ -360,6 +648,18 @@ fn settings_window_widget(
                 &mut settings.start_scanning_on_startup,
                 "Start scanning on startup",
             );
+            ui.checkbox(
+                &mut settings.save_device_settings,
+                "Remember device settings",
+            );
+            let mut current_value = settings.use_polling_rate.load(Ordering::Relaxed);
+            if ui.checkbox(&mut current_value, "Use fixed polling rate").changed() {
+                settings.use_polling_rate.store(current_value, Ordering::Relaxed);
+            }
+            ui.checkbox(
+                &mut settings.enable_persistence,
+                "Enable vibration persistence",
+            );
         });
 }
 
@@ -385,7 +685,7 @@ fn device_widget(
     ui: &mut Ui,
     device: Arc<ButtplugClientDevice>,
     props: &mut DeviceProps,
-    sound_power: f32,
+    vibration_level: f32,
     runtime: &Runtime,
 ) {
     ui.group(|ui| {
@@ -399,7 +699,7 @@ fn device_widget(
             ui.label(format!("Battery: {}%", bat * 100.0));
         }
 
-        let (speed, cutoff) = props.calculate_visual_output(sound_power);
+        let (speed, cutoff) = props.calculate_visual_output(vibration_level);
 
         ui.horizontal(|ui| {
             let label = if props.is_enabled {
@@ -408,13 +708,15 @@ fn device_widget(
                 "Enable"
             };
             let enable_button = SelectableLabel::new(props.is_enabled, label);
-            ui.group(|ui| {
-                if ui.add_sized([60.0, 60.0], enable_button).clicked() {
-                    props.is_enabled = !props.is_enabled;
-                    if !props.is_enabled {
-                        runtime.spawn(device.stop());
+            ui.vertical(|ui| {
+                ui.group(|ui| {
+                    if ui.add_sized([60.0, 60.0], enable_button).clicked() {
+                        props.is_enabled = !props.is_enabled;
+                        if !props.is_enabled {
+                            runtime.spawn(device.stop());
+                        }
                     }
-                }
+                });
             });
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
@@ -429,22 +731,33 @@ fn device_widget(
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Multiplier: ");
-                    ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
+                    let slider_response = ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
+                    if slider_response.double_clicked() {
+                        props.multiplier = 1.0;
+                    }
                     ui.label("Minimum (cut-off): ");
-                    ui.add(Slider::new(&mut props.min, 0.0..=1.0));
+                    let slider_response = ui.add(Slider::new(&mut props.min, 0.0..=1.0).fixed_decimals(2));
+                    if slider_response.double_clicked() {
+                        props.min = 0.0;
+                    }
                     ui.label("Maximum: ");
-                    ui.add(Slider::new(&mut props.max, 0.0..=1.0));
+                    let slider_response = ui.add(Slider::new(&mut props.max, 0.0..=1.0).fixed_decimals(2));
+                    if slider_response.double_clicked() {
+                        props.max = 1.0;
+                    }
                 });
-                ui.collapsing("Vibrators", |ui| {
-                    ui.group(|ui| {
-                        for (i, vibe) in props.vibrators.iter_mut().enumerate()
-                        {
-                            vibrator_widget(ui, i, vibe);
-                        }
+                ui.push_id(format!("vibrators_{}", device.name()), |ui| {
+                    ui.collapsing("Vibrators", |ui| {
+                        ui.group(|ui| {
+                            for (i, vibe) in props.vibrators.iter_mut().enumerate()
+                            {
+                                vibrator_widget(ui, i, vibe);
+                            }
+                        });
                     });
                 });
                 if props.is_enabled {
-                    let speed = props.calculate_output(sound_power);
+                    let speed = props.calculate_output(vibration_level);
                     let speed_cmd = VibrateCommand::SpeedVec(
                         props
                             .vibrators
@@ -464,7 +777,7 @@ fn device_widget(
                     runtime.spawn(device.vibrate(&speed_cmd));
                 }
             })
-        })
+        });
     });
 }
 
@@ -477,14 +790,19 @@ fn vibrator_widget(ui: &mut Ui, index: usize, vibe: &mut VibratorProps) {
         }
 
         ui.label("Multiplier: ");
-        ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
+        let slider_response = ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
+        if slider_response.double_clicked() {
+            vibe.multiplier = 1.0;
+        }
         ui.label("Minimum (cut-off): ");
-        ui.add(Slider::new(&mut vibe.min, 0.0..=1.0));
+        let slider_response = ui.add(Slider::new(&mut vibe.min, 0.0..=1.0).fixed_decimals(2));
+        if slider_response.double_clicked() {
+            vibe.min = 0.0;
+        }
         ui.label("Maximum: ");
-        ui.add(Slider::new(&mut vibe.max, 0.0..=1.0));
-
-        if ui.button("Reset").clicked() {
-            *vibe = VibratorProps::default();
+        let slider_response = ui.add(Slider::new(&mut vibe.max, 0.0..=1.0).fixed_decimals(2));
+        if slider_response.double_clicked() {
+            vibe.max = 1.0;
         }
     });
 }
