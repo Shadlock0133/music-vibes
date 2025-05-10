@@ -5,13 +5,17 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::JoinHandle, time::Instant,
+    thread::JoinHandle,
     time::Duration,
+    time::Instant,
 };
 
 use audio_capture::win::capture::AudioCapture;
 use buttplug::{
-    client::{ButtplugClient, ButtplugClientDevice, VibrateCommand, ButtplugClientError},
+    client::{
+        ButtplugClient, ButtplugClientDevice, ButtplugClientError,
+        ScalarValueCommand,
+    },
     core::message::ActuatorType,
 };
 use clap::Parser;
@@ -26,7 +30,7 @@ use eframe::{
 use tokio::runtime::Runtime;
 
 use crate::{
-    settings::{defaults, Settings, DeviceSettings, VibratorSettings},
+    settings::{defaults, DeviceSettings, Settings, VibratorSettings},
     util::{self, MinCutoff, SharedF32},
 };
 
@@ -41,8 +45,9 @@ pub fn gui(args: Gui) {
     eframe::run_native(
         "Music Vibes",
         native_options,
-        Box::new(|ctx| Box::new(GuiApp::new(args.server_addr, ctx))),
-    );
+        Box::new(|ctx| Ok(Box::new(GuiApp::new(args.server_addr, ctx)))),
+    )
+    .unwrap();
 }
 
 #[allow(dead_code)]
@@ -68,7 +73,9 @@ struct GuiApp {
     runtime: tokio::runtime::Runtime,
     client: Option<ButtplugClient>,
     connection_state: ConnectionState,
-    connection_task: Option<tokio::task::JoinHandle<Result<ButtplugClient, ButtplugClientError>>>,
+    connection_task: Option<
+        tokio::task::JoinHandle<Result<ButtplugClient, ButtplugClientError>>,
+    >,
     server_addr: Option<String>,
     devices: HashMap<String, DeviceProps>,
     sound_power: SharedF32,
@@ -131,7 +138,11 @@ async fn battery_check_bg_task(
 }
 
 impl DeviceProps {
-    fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>, settings: &Settings) -> Self {
+    fn new(
+        runtime: &Runtime,
+        device: Arc<ButtplugClientDevice>,
+        settings: &Settings,
+    ) -> Self {
         let vibe_count = device
             .message_attributes()
             .scalar_cmd()
@@ -149,32 +160,27 @@ impl DeviceProps {
             None
         };
 
-        let (_is_enabled, multiplier, min, max, vibrators) = if let Some(ds) = device_settings {
-            let mut vib_props = Vec::new();
-            for vs in &ds.vibrators {
-                vib_props.push(VibratorProps {
-                    is_enabled: vs.is_enabled,
-                    multiplier: vs.multiplier,
-                    min: vs.min,
-                    max: vs.max,
-                });
-            }
-            while vib_props.len() < vibe_count {
-                vib_props.push(VibratorProps::default());
-            }
-            (
-                ds.is_enabled,
-                ds.multiplier,
-                ds.min,
-                ds.max,
-                vib_props,
-            )
-        } else {
-            let vibrators = from_fn(|| Some(VibratorProps::default()))
-                .take(vibe_count)
-                .collect();
-            (false, 1.0, 0.0, 1.0, vibrators)
-        };
+        let (_is_enabled, multiplier, min, max, vibrators) =
+            if let Some(ds) = device_settings {
+                let mut vib_props = Vec::new();
+                for vs in &ds.vibrators {
+                    vib_props.push(VibratorProps {
+                        is_enabled: vs.is_enabled,
+                        multiplier: vs.multiplier,
+                        min: vs.min,
+                        max: vs.max,
+                    });
+                }
+                while vib_props.len() < vibe_count {
+                    vib_props.push(VibratorProps::default());
+                }
+                (ds.is_enabled, ds.multiplier, ds.min, ds.max, vib_props)
+            } else {
+                let vibrators = from_fn(|| Some(VibratorProps::default()))
+                    .take(vibe_count)
+                    .collect();
+                (false, 1.0, 0.0, 1.0, vibrators)
+            };
         Self {
             is_enabled: false, // Start device disabled
             battery_state: BatteryState::new(runtime, device),
@@ -316,13 +322,15 @@ impl eframe::App for GuiApp {
                     });
                 }
                 let device_settings = DeviceSettings {
-                    is_enabled: false,  // Start device disabled
+                    is_enabled: false, // Start device disabled
                     multiplier: props.multiplier,
                     min: props.min,
                     max: props.max,
                     vibrators,
                 };
-                self.settings.device_settings.insert(device_name.clone(), device_settings);
+                self.settings
+                    .device_settings
+                    .insert(device_name.clone(), device_settings);
             }
         }
         self.settings.save(storage);
@@ -351,10 +359,16 @@ impl eframe::App for GuiApp {
                         }
                     }
                     Ok(Err(e)) => {
-                        self.connection_state = ConnectionState::Error(format!("Connection failed: {}", e));
+                        self.connection_state = ConnectionState::Error(
+                            format!("Connection failed: {}", e),
+                        );
                     }
                     Err(e) => {
-                        self.connection_state = ConnectionState::Error(format!("Connection task panicked unexpectedly: {:?}", e));
+                        self.connection_state =
+                            ConnectionState::Error(format!(
+                                "Connection task panicked unexpectedly: {:?}",
+                                e
+                            ));
                     }
                 }
             } else {
@@ -397,7 +411,7 @@ impl eframe::App for GuiApp {
                         ConnectionState::Connecting => {}
                     }
                 }
-                
+
                 match &self.connection_state {
                     ConnectionState::Disconnected => {
                         ui.label("Disconnected");
@@ -436,8 +450,8 @@ impl eframe::App for GuiApp {
             });
 
             ui.separator();
-            
-            let delta_time = ctx.input().stable_dt;
+
+            let delta_time = ctx.input(|x| x.stable_dt);
             let main_mul = self.settings.main_volume.powi(2);
             let sound_power =
                 (self.sound_power.load() * main_mul).clamp(0.0, 1.0);
@@ -652,9 +666,15 @@ fn settings_window_widget(
                 &mut settings.save_device_settings,
                 "Remember device settings",
             );
-            let mut current_value = settings.use_polling_rate.load(Ordering::Relaxed);
-            if ui.checkbox(&mut current_value, "Use fixed polling rate").changed() {
-                settings.use_polling_rate.store(current_value, Ordering::Relaxed);
+            let mut current_value =
+                settings.use_polling_rate.load(Ordering::Relaxed);
+            if ui
+                .checkbox(&mut current_value, "Use fixed polling rate")
+                .changed()
+            {
+                settings
+                    .use_polling_rate
+                    .store(current_value, Ordering::Relaxed);
             }
             ui.checkbox(
                 &mut settings.enable_persistence,
@@ -731,17 +751,24 @@ fn device_widget(
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Multiplier: ");
-                    let slider_response = ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
+                    let slider_response =
+                        ui.add(Slider::new(&mut props.multiplier, 0.0..=20.0));
                     if slider_response.double_clicked() {
                         props.multiplier = 1.0;
                     }
                     ui.label("Minimum (cut-off): ");
-                    let slider_response = ui.add(Slider::new(&mut props.min, 0.0..=1.0).fixed_decimals(2));
+                    let slider_response = ui.add(
+                        Slider::new(&mut props.min, 0.0..=1.0)
+                            .fixed_decimals(2),
+                    );
                     if slider_response.double_clicked() {
                         props.min = 0.0;
                     }
                     ui.label("Maximum: ");
-                    let slider_response = ui.add(Slider::new(&mut props.max, 0.0..=1.0).fixed_decimals(2));
+                    let slider_response = ui.add(
+                        Slider::new(&mut props.max, 0.0..=1.0)
+                            .fixed_decimals(2),
+                    );
                     if slider_response.double_clicked() {
                         props.max = 1.0;
                     }
@@ -749,7 +776,8 @@ fn device_widget(
                 ui.push_id(format!("vibrators_{}", device.name()), |ui| {
                     ui.collapsing("Vibrators", |ui| {
                         ui.group(|ui| {
-                            for (i, vibe) in props.vibrators.iter_mut().enumerate()
+                            for (i, vibe) in
+                                props.vibrators.iter_mut().enumerate()
                             {
                                 vibrator_widget(ui, i, vibe);
                             }
@@ -758,7 +786,7 @@ fn device_widget(
                 });
                 if props.is_enabled {
                     let speed = props.calculate_output(vibration_level);
-                    let speed_cmd = VibrateCommand::SpeedVec(
+                    let speed_cmd = ScalarValueCommand::ScalarValueVec(
                         props
                             .vibrators
                             .iter()
@@ -790,17 +818,20 @@ fn vibrator_widget(ui: &mut Ui, index: usize, vibe: &mut VibratorProps) {
         }
 
         ui.label("Multiplier: ");
-        let slider_response = ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
+        let slider_response =
+            ui.add(Slider::new(&mut vibe.multiplier, 0.0..=5.0));
         if slider_response.double_clicked() {
             vibe.multiplier = 1.0;
         }
         ui.label("Minimum (cut-off): ");
-        let slider_response = ui.add(Slider::new(&mut vibe.min, 0.0..=1.0).fixed_decimals(2));
+        let slider_response =
+            ui.add(Slider::new(&mut vibe.min, 0.0..=1.0).fixed_decimals(2));
         if slider_response.double_clicked() {
             vibe.min = 0.0;
         }
         ui.label("Maximum: ");
-        let slider_response = ui.add(Slider::new(&mut vibe.max, 0.0..=1.0).fixed_decimals(2));
+        let slider_response =
+            ui.add(Slider::new(&mut vibe.max, 0.0..=1.0).fixed_decimals(2));
         if slider_response.double_clicked() {
             vibe.max = 1.0;
         }

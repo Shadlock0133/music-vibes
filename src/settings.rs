@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::collections::HashMap;
 
 use eframe::{get_value, set_value, Storage};
 
@@ -47,7 +47,9 @@ impl Default for Settings {
             use_dark_mode: defaults::DARK_MODE,
             start_scanning_on_startup: defaults::START_SCANNING_ON_STARTUP,
             polling_rate_ms: SharedF32::new(defaults::POLLING_RATE_MS),
-            use_polling_rate: Arc::new(AtomicBool::new(defaults::USE_POLLING_RATE,)),
+            use_polling_rate: Arc::new(AtomicBool::new(
+                defaults::USE_POLLING_RATE,
+            )),
             device_settings: HashMap::new(),
             save_device_settings: false,
             enable_persistence: defaults::ENABLE_PERSISTENCE,
@@ -92,12 +94,14 @@ impl Settings {
         let use_dark_mode =
             get_value(storage, names::DARK_MODE).unwrap_or(defaults::DARK_MODE);
         let start_scanning_on_startup =
-            get_value(storage, names::START_SCANNING_ON_STARTUP).unwrap_or(defaults::START_SCANNING_ON_STARTUP);
-            get_value(storage, names::START_SCANNING_ON_STARTUP).unwrap_or(defaults::START_SCANNING_ON_STARTUP);
-        let polling_rate_ms = 
-            get_value(storage, names::POLLING_RATE_MS).unwrap_or(defaults::POLLING_RATE_MS);
-        let use_polling_rate =
-            get_value(storage, names::USE_POLLING_RATE).unwrap_or(defaults::USE_POLLING_RATE);
+            get_value(storage, names::START_SCANNING_ON_STARTUP)
+                .unwrap_or(defaults::START_SCANNING_ON_STARTUP);
+        get_value(storage, names::START_SCANNING_ON_STARTUP)
+            .unwrap_or(defaults::START_SCANNING_ON_STARTUP);
+        let polling_rate_ms = get_value(storage, names::POLLING_RATE_MS)
+            .unwrap_or(defaults::POLLING_RATE_MS);
+        let use_polling_rate = get_value(storage, names::USE_POLLING_RATE)
+            .unwrap_or(defaults::USE_POLLING_RATE);
         let device_settings: HashMap<String, DeviceSettings> =
             get_value(storage, names::DEVICE_SETTINGS).unwrap_or_default();
         let save_device_settings =
@@ -114,9 +118,7 @@ impl Settings {
             use_dark_mode,
             start_scanning_on_startup,
             polling_rate_ms: SharedF32::new(polling_rate_ms),
-            use_polling_rate: Arc::new(AtomicBool::new(
-            use_polling_rate,
-            )),
+            use_polling_rate: Arc::new(AtomicBool::new(use_polling_rate)),
             device_settings,
             save_device_settings,
             enable_persistence,
@@ -129,13 +131,31 @@ impl Settings {
         set_value(storage, names::MAIN_VOLUME, &self.main_volume);
         set_value(storage, names::LOW_PASS_FREQ, &self.low_pass_freq.load());
         set_value(storage, names::DARK_MODE, &self.use_dark_mode);
-        set_value(storage, names::START_SCANNING_ON_STARTUP, &self.start_scanning_on_startup);
-        set_value(storage, names::POLLING_RATE_MS, &self.polling_rate_ms.load());
-        set_value(storage, names::USE_POLLING_RATE, &self.use_polling_rate.load(Ordering::Relaxed),);
-        set_value(storage, names::SAVE_DEVICE_SETTINGS, &self.save_device_settings);
+        set_value(
+            storage,
+            names::START_SCANNING_ON_STARTUP,
+            &self.start_scanning_on_startup,
+        );
+        set_value(
+            storage,
+            names::POLLING_RATE_MS,
+            &self.polling_rate_ms.load(),
+        );
+        set_value(
+            storage,
+            names::USE_POLLING_RATE,
+            &self.use_polling_rate.load(Ordering::Relaxed),
+        );
+        set_value(
+            storage,
+            names::SAVE_DEVICE_SETTINGS,
+            &self.save_device_settings,
+        );
         set_value(storage, names::ENABLE_PERSISTENCE, &self.enable_persistence);
         set_value(storage, names::HOLD_DELAY_MS, &self.hold_delay_ms);
         set_value(storage, names::DECAY_RATE_PER_SEC, &self.decay_rate_per_sec);
-        if self.save_device_settings {set_value(storage, names::DEVICE_SETTINGS, &self.device_settings);}
+        if self.save_device_settings {
+            set_value(storage, names::DEVICE_SETTINGS, &self.device_settings);
+        }
     }
 }
