@@ -3,11 +3,10 @@ use std::{
     iter::from_fn,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread::JoinHandle,
-    time::Duration,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use audio_capture::win::capture::AudioCapture;
@@ -21,8 +20,8 @@ use buttplug::{
 use clap::Parser;
 use eframe::{
     egui::{
-        self, Button, Color32, ProgressBar, RichText, SelectableLabel, Slider,
-        TextFormat, Ui, Visuals, Window,
+        self, Button, Color32, ProgressBar, RichText, Slider, TextFormat, Ui,
+        Visuals, Window,
     },
     epaint::text::LayoutJob,
     CreationContext, Storage,
@@ -63,7 +62,7 @@ impl Drop for GuiApp {
     fn drop(&mut self) {
         if let Some(client) = &self.client {
             if let Err(e) = self.runtime.block_on(client.stop_all_devices()) {
-                eprintln!("Error stopping devices: {:?}", e);
+                eprintln!("Error stopping devices: {e:?}");
             }
         }
     }
@@ -77,7 +76,7 @@ struct GuiApp {
         tokio::task::JoinHandle<Result<ButtplugClient, ButtplugClientError>>,
     >,
     server_addr: Option<String>,
-    devices: HashMap<String, DeviceProps>,
+    devices: HashMap<String, Device>,
     sound_power: SharedF32,
     _capture_thread: JoinHandle<()>,
     is_scanning: bool,
@@ -85,6 +84,11 @@ struct GuiApp {
     vibration_level: f32,
     hold_start_time: Option<Instant>,
     settings: Settings, // Persistent settings
+}
+
+struct Device {
+    props: Arc<Mutex<DeviceProps>>,
+    _task: tokio::task::JoinHandle<()>,
 }
 
 struct DeviceProps {
@@ -98,7 +102,10 @@ struct DeviceProps {
 
 // TEMP: if readout returned an error, SharedF32 will be set to NaN
 #[allow(dead_code)]
-struct BatteryState(SharedF32, tokio::task::JoinHandle<()>);
+struct BatteryState {
+    shared_level: SharedF32,
+    _task: tokio::task::JoinHandle<()>,
+}
 
 impl BatteryState {
     pub fn new(runtime: &Runtime, device: Arc<ButtplugClientDevice>) -> Self {
@@ -107,11 +114,14 @@ impl BatteryState {
             let shared_level = shared_level.clone();
             runtime.spawn(battery_check_bg_task(device, shared_level))
         };
-        Self(shared_level, task)
+        Self {
+            shared_level,
+            _task: task,
+        }
     }
 
     pub fn get_level(&self) -> Option<f32> {
-        let value = self.0.load();
+        let value = self.shared_level.load();
         if value.is_nan() {
             None
         } else {
@@ -233,7 +243,7 @@ fn capture_thread(
     loop {
         let use_custom = use_polling_rate.load(Ordering::Relaxed);
         let sleep_duration = if use_custom {
-            Duration::from_millis(polling_rate_ms.load().max(1.0) as u64)
+            Duration::from_millis(polling_rate_ms.load().max(100.0) as u64)
         } else {
             actual_duration
         };
@@ -311,8 +321,9 @@ impl eframe::App for GuiApp {
     fn save(&mut self, storage: &mut dyn Storage) {
         // Update device settings before saving if the toggle is enabled
         if self.settings.save_device_settings {
-            for (device_name, props) in &self.devices {
+            for (device_name, device) in &self.devices {
                 let mut vibrators = Vec::new();
+                let props = &device.props.lock().unwrap();
                 for vibe in &props.vibrators {
                     vibrators.push(VibratorSettings {
                         is_enabled: vibe.is_enabled,
@@ -360,14 +371,13 @@ impl eframe::App for GuiApp {
                     }
                     Ok(Err(e)) => {
                         self.connection_state = ConnectionState::Error(
-                            format!("Connection failed: {}", e),
+                            format!("Connection failed: {e}"),
                         );
                     }
                     Err(e) => {
                         self.connection_state =
                             ConnectionState::Error(format!(
-                                "Connection task panicked unexpectedly: {:?}",
-                                e
+                                "Connection task panicked unexpectedly: {e:?}"
                             ));
                     }
                 }
@@ -443,7 +453,7 @@ impl eframe::App for GuiApp {
                     if let Some(client) = &self.client {
                         self.runtime.spawn(client.stop_all_devices());
                         for device in self.devices.values_mut() {
-                            device.is_enabled = false;
+                            device.props.lock().unwrap().is_enabled = false;
                         }
                     }
                 }
@@ -627,14 +637,52 @@ impl eframe::App for GuiApp {
 
             ui.heading("Devices");
             if let Some(client) = &self.client {
-                for device in client.devices() {
-                    let device_name = device.name().to_string();
+                for bp_device in client.devices() {
+                    let device_name = bp_device.name().to_string();
                     if !self.devices.contains_key(&device_name) {
-                        let props = DeviceProps::new(&self.runtime, device.clone(), &self.settings);
-                        self.devices.insert(device_name.clone(), props);
+                        let props = Arc::new(Mutex::new(DeviceProps::new(&self.runtime, bp_device.clone(), &self.settings)));
+                        let task = self.runtime.spawn({
+                            let bp_device = bp_device.clone();
+                            let props = props.clone();
+                            let sound_power = self.sound_power.clone();
+                            async move {
+                                loop {
+                                    let now = tokio::time::Instant::now();
+                                    let vibration_level = sound_power.load();
+                                    let speed_cmd = {
+                                        let props = props.lock().unwrap();
+                                        let speed = props.calculate_output(vibration_level);
+                                        ScalarValueCommand::ScalarValueVec(
+                                            props
+                                                .vibrators
+                                                .iter()
+                                                .map(|v| {
+                                                    if v.is_enabled && props.is_enabled {
+                                                        (speed * v.multiplier)
+                                                            .clamp(0.0, v.max)
+                                                            .min_cutoff(v.min)
+                                                            as f64
+                                                    } else {
+                                                        0.0
+                                                    }
+                                                })
+                                                .collect(),
+                                        )
+                                    };
+                                    if let Err(e) = bp_device.vibrate(&speed_cmd).await {
+                                        eprintln!("Vibrate command error: {e}");
+                                    }
+                                    tokio::time::sleep_until(now + Duration::from_millis(5)).await;
+                                }
+                            }
+                        });
+                        let device = Device {
+                            props, _task: task
+                        };
+                        self.devices.insert(device_name.clone(), device);
                     }
-                    let props = self.devices.get_mut(&device_name).unwrap();
-                    device_widget(ui, device, props, self.vibration_level, &self.runtime);
+                    let device = self.devices.get_mut(&device_name).unwrap();
+                    device_widget(ui, bp_device, &mut device.props.lock().unwrap(), self.vibration_level, &self.runtime);
                 }
             }
         });
@@ -727,7 +775,7 @@ fn device_widget(
             } else {
                 "Enable"
             };
-            let enable_button = SelectableLabel::new(props.is_enabled, label);
+            let enable_button = Button::selectable(props.is_enabled, label);
             ui.vertical(|ui| {
                 ui.group(|ui| {
                     if ui.add_sized([60.0, 60.0], enable_button).clicked() {
@@ -784,26 +832,6 @@ fn device_widget(
                         });
                     });
                 });
-                if props.is_enabled {
-                    let speed = props.calculate_output(vibration_level);
-                    let speed_cmd = ScalarValueCommand::ScalarValueVec(
-                        props
-                            .vibrators
-                            .iter()
-                            .map(|v| {
-                                if v.is_enabled {
-                                    (speed * v.multiplier)
-                                        .clamp(0.0, v.max)
-                                        .min_cutoff(v.min)
-                                        as f64
-                                } else {
-                                    0.0
-                                }
-                            })
-                            .collect(),
-                    );
-                    runtime.spawn(device.vibrate(&speed_cmd));
-                }
             })
         });
     });

@@ -11,7 +11,7 @@ buttplug = "9.0.8"
 flume = "0.11.1"
 clap = { version = "4.5.37", features = ["derive"] }
 audio-capture = { git = "https://github.com/Shadlock0133/audio-capture", rev = "26e326cffcf00cdc564a2b840c6421e021e0c27f" }
-parking_lot = "0.12.3"
-eframe = { version = "0.31.1", features = ["persistence"] }
-tokio = { version = "1.45.0", features = ["rt-multi-thread"] }
+parking_lot = "0.12.4"
+eframe = { version = "0.32.0", features = ["persistence"] }
+tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }

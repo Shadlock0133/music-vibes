@@ -29,14 +29,14 @@ pub async fn start_bp_server(
     let mut client = ButtplugClient::new(name);
     // Fallback to in-process server
     if let Err(e) = client.connect(remote_connector).await {
-        eprintln!("Couldn't connect to external server: {}", e);
+        eprintln!("Couldn't connect to external server: {e}");
         eprintln!("Launching in-process server");
         client = in_process_client(name, false).await;
     }
 
     let server_name = client.server_name();
     let server_name = server_name.as_deref().unwrap_or("<unknown>");
-    eprintln!("Server name: {}", server_name);
+    eprintln!("Server name: {server_name}");
 
     Ok(client)
 }
